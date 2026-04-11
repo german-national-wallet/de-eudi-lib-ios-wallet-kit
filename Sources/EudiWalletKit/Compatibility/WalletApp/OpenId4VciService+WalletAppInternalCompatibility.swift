@@ -22,4 +22,16 @@ extension OpenId4VCIService {
 			issuer: config.clientId
 		)
 	}
+
+	func getKeyAttestationJWTForWalletAppCompatibility(_ publicKeys: [ECPublicKey], nonce: String?) async throws -> KeyAttestationJWT {
+		guard let additionalOptions = issueReq.keyOptions?.additionalOptions else {
+			throw PresentationSession.makeError(str: "additionalOptions not found")
+		}
+		guard let docType = String(data: additionalOptions, encoding: .utf8),
+			  let wte = UserDefaults.standard.string(forKey: docType) else {
+			throw PresentationSession.makeError(str: "wte not found")
+		}
+		let keyAttestationJwt: KeyAttestationJWT = try .init(jws: .init(compactSerialization: wte))
+		return keyAttestationJwt
+	}
 }

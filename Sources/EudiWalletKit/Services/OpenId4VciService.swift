@@ -85,24 +85,30 @@ public actor OpenId4VCIService {
 			throw PresentationSession.makeError(str: "Unsupported secure area signing algorithm: \(selectedAlgorithm)")
 		}
 		let publicCoseKeys = try await issueReq.createKeyBatch()
+
 		let publicKeys = try publicCoseKeys.map { try ECPublicKey(publicKey: try $0.toSecKey(), additionalParameters: ["alg": JWSAlgorithm(algType).name, "use": "sig", "kid": UUID().uuidString]) }
 		let unlockData = try await issueReq.secureArea.unlockKey(id: issueReq.id)
 		var funcKeyAttestationJWT: FuncKeyAttestationJWT? = nil
 		if config.keyAttestationsConfig != nil, configuration.supportsAttestationProofType {
-			funcKeyAttestationJWT = { nonce in try await self.getKeyAttestationJWT(publicKeys, nonce: nonce) }
+			funcKeyAttestationJWT = { nonce in
+				try await self.getKeyAttestationJWTForWalletAppCompatibility(publicKeys, nonce: nonce)
+			}
 		} else if config.keyAttestationsConfig != nil, configuration.supportsJwtProofTypeWithAttestation {
 			throw PresentationSession.makeError(str: "JWT proof with attestation is not yet supported in wallet")
 		}
-		let bindingKeys = try publicKeys.enumerated().map { try createBindingKey($0.element, secureAreaSigningAlg: selectedAlgorithm, unlockData: unlockData, index: $0.offset, funcKeyAttestationJWT: funcKeyAttestationJWT) }
-		return (bindingKeys, publicCoseKeys.map { Data($0.toCBOR(options: CBOROptions()).encode()) })
+		if funcKeyAttestationJWT != nil {
+			return (
+				[.attestation(keyAttestationJWT: funcKeyAttestationJWT!)],
+				publicCoseKeys.map { Data($0.toCBOR(options: CBOROptions()).encode()) }
+			)
+		} else {
+			let bindingKeys = try publicKeys.enumerated().map { try createBindingKey($0.element, secureAreaSigningAlg: selectedAlgorithm, unlockData: unlockData, index: $0.offset, funcKeyAttestationJWT: funcKeyAttestationJWT) }
+			return (bindingKeys, publicCoseKeys.map { Data($0.toCBOR(options: CBOROptions()).encode()) })
+		}
 	}
 
-	// Warning: German Wallet-specific
 	func getKeyAttestationJWT(_ publicKeys: [ECPublicKey], nonce: String?) async throws -> KeyAttestationJWT {
-		guard let nonce else {
-			throw PresentationSession.makeError(str: "Missing nonce for key attestation proof")
-		}
-		let jwt = try await self.config.keyAttestationsConfig!.walletAttestationsProvider.getKeysAttestation(keys: publicKeys, nonce: nonce)
+		let jwt = try await self.config.keyAttestationsConfig!.walletAttestationsProvider.getKeysAttestation(keys: publicKeys, nonce: nonce!)
 		let keyAttestationJwt: KeyAttestationJWT = try .init(jws: .init(compactSerialization: jwt))
 		return keyAttestationJwt
 	}
@@ -111,16 +117,16 @@ public actor OpenId4VCIService {
 		self.config = config
 	}
 
-	// Warning: German Wallet-specific
 	func createBindingKey(_ publicKeyJWK: ECPublicKey, secureAreaSigningAlg: MdocDataModel18013.SigningAlgorithm, unlockData: Data?, index: Int, funcKeyAttestationJWT: FuncKeyAttestationJWT?) throws -> BindingKey {
 		let algType = Self.mapToJWSAlgorithmType(secureAreaSigningAlg)!
 		let signer = try SecureAreaSigner(secureArea: issueReq.secureArea, id: issueReq.id, index: index, ecAlgorithm: secureAreaSigningAlg, unlockData: unlockData)
-		return try makeBindingKeyForWalletAppCompatibility(
-			publicKeyJWK: publicKeyJWK,
-			algType: algType,
-			signer: signer,
-			funcKeyAttestationJWT: funcKeyAttestationJWT
-		)
+		let bindingKey: BindingKey
+		if funcKeyAttestationJWT == nil {
+			bindingKey = .jwt(algorithm: JWSAlgorithm(algType), jwk: publicKeyJWK, privateKey: .custom(signer), issuer: config.clientId)
+		} else {
+			bindingKey = try! .jwtKeyAttestation(algorithm: JWSAlgorithm(algType), keyAttestationJWT: funcKeyAttestationJWT!, keyIndex: UInt(index), privateKey: .custom(signer), issuer: config.clientId)
+		}
+		return bindingKey
 	}
 
 	func createKeyBatch() async throws {
