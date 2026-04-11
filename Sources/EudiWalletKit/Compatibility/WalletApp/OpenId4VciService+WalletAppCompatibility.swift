@@ -184,7 +184,7 @@ extension OpenId4VCIService {
 						disablePrompt: index > 0,
 						promptMessage: promptMessage
 					)
-
+					await service.setAdditionalOptions(docType.identifier ?? "")
 					let (bindingKeys, publicKeys) = try await service.initSecurityKeys(credentialConfigurations[index])
 					let outcome = try await service.issueDocumentByOfferUrl(
 						issuer: issuer,
@@ -216,6 +216,10 @@ extension OpenId4VCIService {
 			}
 			return documents
 		}
+	}
+
+	private func setAdditionalOptions(_ value: String) {
+		issueReq.keyOptions?.additionalOptions = Data(value.utf8)
 	}
 
 	func getCredentialsWithRefreshToken(docTypeIdentifier: DocTypeIdentifier, authorizedRequest: AuthorizedRequest, issuerDPopConstructorParam: IssuerDPoPConstructorParam, docId: String) async throws -> (IssuanceOutcome?, DocDataFormat?, AuthorizedRequest?) {
