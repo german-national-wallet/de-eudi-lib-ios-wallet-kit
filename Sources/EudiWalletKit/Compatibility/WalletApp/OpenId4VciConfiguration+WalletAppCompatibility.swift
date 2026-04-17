@@ -35,9 +35,9 @@ extension OpenId4VciConfiguration {
 			client: client,
 			authFlowRedirectionURI: authFlowRedirectionURI,
 			authorizeIssuanceConfig: authorizeIssuanceConfig,
-			usePAR: usePAR,
+			requirePAR: requirePAR,
 			clientAttestationPoPBuilder: clientAttestationPoPBuilder,
-			useDpopIfSupported: useDpopIfSupported
+			requireDpop: requireDpop
 		)
 	}
 
