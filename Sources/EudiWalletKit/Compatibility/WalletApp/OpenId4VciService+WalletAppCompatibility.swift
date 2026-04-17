@@ -68,7 +68,8 @@ extension OpenId4VCIService {
 				configuration: configuration,
 				metadataKey: metadataKey,
 				pckeCodeVerifier: parPlaced.pkceVerifier.codeVerifier,
-				pckeCodeVerifierMethod: parPlaced.pkceVerifier.codeVerifierMethod
+				pckeCodeVerifierMethod: parPlaced.pkceVerifier.codeVerifierMethod,
+				state: parPlaced.state
 			)
 		)
 
@@ -145,14 +146,25 @@ extension OpenId4VCIService {
 
 		let issuer = try await getIssuerForWalletAppCompatibility(offer: offer, nonce: nonce)
 		let pkceVerifier = try PKCEVerifier(codeVerifier: model.pckeCodeVerifier, codeVerifierMethod: model.pckeCodeVerifierMethod)
+		let authorizationCodeURL = try AuthorizationCodeURL(urlString: pendingDoc.authorizePresentationUrl ?? "")
+		let request = try AuthorizationCodeRetrieved(
+			credentials: [.init(value: model.configuration.configurationIdentifier.value)],
+			authorizationCode: IssuanceAuthorization(authorizationCode: authorizationCode),
+			pkceVerifier: pkceVerifier,
+			configurationIds: [model.configuration.configurationIdentifier],
+			dpopNonce: nil,
+			state: model.state
+		)
+		let preparedRequest = AuthorizationRequested(
+			credentials: request.credentials,
+			authorizationCodeURL: authorizationCodeURL,
+			pkceVerifier: pkceVerifier,
+			state: request.state,
+			configurationIds: request.configurationIds
+		)
 		let authorized = try await issuer.authorizeWithAuthorizationCode(
-			request: AuthorizationCodeRetrieved(
-				credentials: [.init(value: model.configuration.configurationIdentifier.value)],
-				authorizationCode: IssuanceAuthorization(authorizationCode: authorizationCode),
-				pkceVerifier: pkceVerifier,
-				configurationIds: [model.configuration.configurationIdentifier],
-				dpopNonce: nil
-			),
+			request: request,
+			preparedRequest: preparedRequest,
 			grant: try offer.grants ?? .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil))
 		)
 
@@ -317,7 +329,7 @@ extension OpenId4VCIService {
 
 	private func getIssuerForWalletAppCompatibility(offer: CredentialOffer, nonce: String? = nil) async throws -> Issuer {
 		var dpopConstructor: DPoPConstructorType? = nil
-		if config.useDpopIfSupported {
+		if config.requireDpop {
 			dpopConstructor = try await config.makePoPConstructor(
 				popUsage: .dpop,
 				privateKeyId: issueReq.dpopKeyId,
