@@ -28,6 +28,7 @@ import JOSESwift
 import SwiftyJSON
 import LocalAuthentication
 import class eudi_lib_sdjwt_swift.CompactParser
+import struct OpenID4VCI.Constants
 
 public actor OpenId4VCIService {
 	var issueReq: IssueRequest!
@@ -192,7 +193,7 @@ public actor OpenId4VCIService {
 
 	func getIssuer(offer: CredentialOffer, dpopKeyId: String? = nil) async throws -> Issuer {
 		var dpopConstructor: DPoPConstructorType? = nil
-		if config.useDpopIfSupported {
+		if config.requireDpop {
 			dpopConstructor = try await config.makePoPConstructor(popUsage: .dpop, privateKeyId: dpopKeyId ?? issueReq.dpopKeyId, algorithms: offer.authorizationServerMetadata.dpopSigningAlgValuesSupported, keyOptions: config.dpopKeyOptions)
 		}
 		let vciConfig = try await config.toOpenId4VCIConfig(credentialIssuerId: offer.credentialIssuerIdentifier.url.absoluteString, clientAttestationPopSigningAlgValuesSupported: offer.authorizationServerMetadata.clientAttestationPopSigningAlgValuesSupported)
@@ -209,9 +210,16 @@ public actor OpenId4VCIService {
 		}
 	}
 
-	func getIssuerForDeferred(data: DeferredIssuanceModel) async throws -> Issuer {
-		let vciConfig = try await config.toOpenId4VCIConfig(credentialIssuerId: data.configuration.credentialIssuerIdentifier, clientAttestationPopSigningAlgValuesSupported: data.configuration.clientAttestationPopSigningAlgValuesSupported?.map { JWSAlgorithm(name: $0) }.compactMap { $0 })
-		return try Issuer.createDeferredIssuer(deferredCredentialEndpoint: data.deferredCredentialEndpoint, deferredRequesterPoster: Poster(session: networking), config: vciConfig)
+	func getIssuerForDeferred(data: DeferredIssuanceModel, dpopKeyId: String? = nil) async throws -> (Issuer,DPoPConstructor?) {
+		let vciConfig = try await config.toOpenId4VCIConfig(credentialIssuerId: data.configuration.credentialIssuerIdentifier, clientAttestationPopSigningAlgValuesSupported: data.configuration.clientAttestationPopSigningAlgValuesSupported?.map { JWSAlgorithm(name: $0) })
+		var dpopConstructor: DPoPConstructor? = nil
+		let dpopSigningAlgValuesSupported = data.configuration.dpopSigningAlgValuesSupported?.map { JWSAlgorithm(name: $0) }
+		if config.requireDpop {
+			dpopConstructor = try await config.makePoPConstructor(popUsage: .dpop, privateKeyId: dpopKeyId ?? issueReq.dpopKeyId, algorithms: dpopSigningAlgValuesSupported, keyOptions: config.dpopKeyOptions)
+		}
+		let authorizationServerMetadata = IdentityAndAccessManagementMetadata.oauth( .init(authorizationEndpoint: Constants.url, tokenEndpoint: Constants.url, dpopSigningAlgValuesSupported: dpopSigningAlgValuesSupported, pushedAuthorizationRequestEndpoint: Constants.url))
+		let issuer = try Issuer(authorizationServerMetadata: authorizationServerMetadata, issuerMetadata: .init(deferredCredentialEndpoint: data.deferredCredentialEndpoint), config: vciConfig, dpopConstructor: dpopConstructor, session: networking)
+		return (issuer, dpopConstructor)
 	}
 
 	func authorizeOffer(offerUri: String, docTypeModels: [OfferedDocModel], txCodeValue: String?, authorized: AuthorizedRequest?, backgroundOnly: Bool = false, dpopKeyId: String? = nil) async throws -> (AuthorizeRequestOutcome, Issuer, [CredentialConfiguration]) {
@@ -234,8 +242,8 @@ public actor OpenId4VCIService {
 		if var authorized {
 			do {
 				authorized = try await issuer.refresh(client: vciConfig.client, authorizedRequest: authorized, dPopNonce: nil)
-				authorizedOutcome = .authorized(authorized)
 				logger.info("Refreshed authorized request for offer \(offerUri)")
+				authorizedOutcome = .authorized(authorized)
 				return (authorizedOutcome, issuer, credentialInfos)
 			}
 			catch {
@@ -259,7 +267,7 @@ public actor OpenId4VCIService {
 			logger.info("Dynamic issuance request with url: \(url)")
 			let uuid = UUID().uuidString
 			Self.credentialOfferCache[uuid] = offer
-			return .pending(PendingIssuanceModel(pendingReason: .presentation_request_url(url.absoluteString), configuration: configuration, metadataKey: uuid, pckeCodeVerifier: authRequested.pkceVerifier.codeVerifier, pckeCodeVerifierMethod: authRequested.pkceVerifier.codeVerifierMethod ))
+			return .pending(PendingIssuanceModel(pendingReason: .presentation_request_url(url.absoluteString), configuration: configuration, metadataKey: uuid, pckeCodeVerifier: authRequested.pkceVerifier.codeVerifier, pckeCodeVerifierMethod: authRequested.pkceVerifier.codeVerifierMethod, state: authRequested.state ))
 		}
 		guard case .authorized(let authorized) = authorizedOutcome else {
 			throw PresentationSession.makeError(str: "Invalid authorized request outcome")
@@ -482,7 +490,7 @@ public actor OpenId4VCIService {
 
 	private func authorizeRequestWithAuthCodeUseCase(issuer: Issuer, offer: CredentialOffer) async throws -> AuthorizeRequestOutcome {
 		let pushedAuthorizationRequestEndpoint = if case let .oidc(metaData) = offer.authorizationServerMetadata, let endpoint = metaData.pushedAuthorizationRequestEndpoint { endpoint } else if case let .oauth(metaData) = offer.authorizationServerMetadata, let endpoint = metaData.pushedAuthorizationRequestEndpoint { endpoint } else { "" }
-		if config.usePAR && pushedAuthorizationRequestEndpoint.isEmpty { logger.info("PAR not supported, Pushed Authorization Request Endpoint is nil") }
+		if config.requirePAR && pushedAuthorizationRequestEndpoint.isEmpty { logger.info("PAR not supported, Pushed Authorization Request Endpoint is nil") }
 		logger.info("--> [AUTHORIZATION] Placing Request to AS server's endpoint \(pushedAuthorizationRequestEndpoint)")
 		let parPlaced = try await issuer.prepareAuthorizationRequest(credentialOffer: offer)
 
@@ -501,7 +509,7 @@ public actor OpenId4VCIService {
 	private func handleAuthorizationCode(issuer: Issuer, offer: CredentialOffer, request: AuthorizationRequested, authorizationCode: String) async throws -> AuthorizedRequest {
 		let issuanceAuthorization: IssuanceAuthorization = .authorizationCode(authorizationCode: authorizationCode)
 		let codeRetrieved = try await issuer.handleAuthorizationCode(request: request, authorizationCode: issuanceAuthorization)
-		let authorized = try await issuer.authorizeWithAuthorizationCode(request: codeRetrieved, authorizationDetailsInTokenRequest: .doNotInclude, grant: try offer.grants ?? .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil)))
+		let authorized = try await issuer.authorizeWithAuthorizationCode(request: codeRetrieved, preparedRequest: request, authorizationDetailsInTokenRequest: .doNotInclude, grant: try offer.grants ?? .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil)))
 		let at = authorized.accessToken
 		logger.info("--> [AUTHORIZATION] Authorization code exchanged with access token : \(at)")
 		_ = authorized.accessToken.isExpired(issued: authorized.timeStamp, at: Date().timeIntervalSinceReferenceDate)
@@ -582,9 +590,10 @@ public actor OpenId4VCIService {
 
 	func requestDeferredIssuance(deferredDoc: WalletStorage.Document) async throws -> IssuanceOutcome {
 		let model = try JSONDecoder().decode(DeferredIssuanceModel.self, from: deferredDoc.data)
-		let issuer = try await getIssuerForDeferred(data: model)
+		let dpopKeyId = DocMetadata(from: deferredDoc.metadata)?.dpopKeyId
+		let (issuer, dpopConstructor) = try await getIssuerForDeferred(data: model, dpopKeyId: dpopKeyId)
 		let authorized = AuthorizedRequest(accessToken: model.accessToken, refreshToken: model.refreshToken, credentialIdentifiers: nil, timeStamp: model.timeStamp, dPopNonce: nil, grant: nil)
-		return try await deferredCredentialUseCase(issuer: issuer, authorized: authorized, transactionId: model.transactionId, publicKeys: model.publicKeys, derKeyData: model.derKeyData, configuration: model.configuration)
+		return try await deferredCredentialUseCase(issuer: issuer, dpopConstructor: dpopConstructor, authorized: authorized, transactionId: model.transactionId, publicKeys: model.publicKeys, derKeyData: model.derKeyData, configuration: model.configuration)
 	}
 
 
@@ -625,19 +634,27 @@ public actor OpenId4VCIService {
 		let issuer = try await getIssuer(offer: offer)
 		logger.info("Starting issuing with identifer \(model.configuration.configurationIdentifier.value)")
 		let pkceVerifier = try PKCEVerifier(codeVerifier: model.pckeCodeVerifier, codeVerifierMethod: model.pckeCodeVerifierMethod)
-		let authorized = try await issuer.authorizeWithAuthorizationCode(request: AuthorizationCodeRetrieved(credentials: [.init(value: model.configuration.configurationIdentifier.value)], authorizationCode: IssuanceAuthorization(authorizationCode: authorizationCode), pkceVerifier: pkceVerifier, configurationIds: [model.configuration.configurationIdentifier], dpopNonce: nil), grant: try offer.grants ?? .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil)))
+		let request = try AuthorizationCodeRetrieved(credentials: [.init(value: model.configuration.configurationIdentifier.value)], authorizationCode: IssuanceAuthorization(authorizationCode: authorizationCode), pkceVerifier: pkceVerifier, configurationIds: [model.configuration.configurationIdentifier], dpopNonce: nil, state: model.state)
+		let authorizationCodeURL = try AuthorizationCodeURL(urlString: webUrl.absoluteString)
+		let preparedRequest = AuthorizationRequested(credentials: request.credentials, authorizationCodeURL: authorizationCodeURL, pkceVerifier: pkceVerifier, state: request.state, configurationIds: request.configurationIds)
+		let authorized = try await issuer.authorizeWithAuthorizationCode(request: request, preparedRequest: preparedRequest,
+			grant: try offer.grants ?? .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil))
+		)
 		let (bindingKeys, publicKeys) = try await initSecurityKeys(model.configuration)
 		let res = try await Self.submissionUseCase(authorized, issuer: issuer, configuration: model.configuration, bindingKeys: bindingKeys, publicKeys: publicKeys, logger: logger)
 		return res
 	}
 
-	private func deferredCredentialUseCase(issuer: Issuer, authorized: AuthorizedRequest, transactionId: TransactionId, publicKeys: [Data], derKeyData: Data?, configuration: CredentialConfiguration) async throws -> IssuanceOutcome {
+	private func deferredCredentialUseCase(issuer: Issuer, dpopConstructor: DPoPConstructor?, authorized: AuthorizedRequest, transactionId: TransactionId, publicKeys: [Data], derKeyData: Data?, configuration: CredentialConfiguration) async throws -> IssuanceOutcome {
 		logger.info("--> [ISSUANCE] Got a deferred issuance response from server with transaction_id \(transactionId.value). Retrying issuance...")
+		var deferredResponseEncryptionSpec: IssuanceResponseEncryptionSpec? = nil
 		if let derKeyData {
-			let deferredResponseEncryptionSpec = await Issuer.createResponseEncryptionSpec(issuer.issuerMetadata.credentialResponseEncryption, privateKeyData: derKeyData)
+			deferredResponseEncryptionSpec = await Issuer.createResponseEncryptionSpec(issuer.issuerMetadata.credentialResponseEncryption,  privateKeyData: derKeyData)
 			await issuer.setDeferredResponseEncryptionSpec(deferredResponseEncryptionSpec)
 		}
-		let deferredRequestResponse = try await issuer.requestDeferredCredential(request: authorized, transactionId: transactionId, dPopNonce: nil)
+		let deferredIssuanceRequester = await IssuanceRequester(issuerMetadata: issuer.issuerMetadata, poster: Poster(session: networking), dpopConstructor: dpopConstructor)
+		let deferredRequestResponse = try await deferredIssuanceRequester.placeDeferredCredentialRequest(
+			accessToken: authorized.accessToken, transactionId: transactionId, dPopNonce: nil, maxRetries: Constants.MAX_RETRIES, issuanceResponseEncryptionSpec: deferredResponseEncryptionSpec)
 		switch deferredRequestResponse {
 		case .issued(let credential):
 			return try await Self.handleCredentialResponse(credentials: [credential], publicKeys: publicKeys, format: nil, configuration: configuration, authorized: authorized, logger: logger)
@@ -868,7 +885,7 @@ extension WalletError {
 			else { return WalletError(description: wae.localizedDescription) }
 		}
 		return WalletError(description:"Authorization request failed: \(error.localizedDescription)")
-		
+
 	}
 }
 
