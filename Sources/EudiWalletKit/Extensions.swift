@@ -43,7 +43,7 @@ func secCall<Result>(_ body: (_ resultPtr: UnsafeMutablePointer<Unmanaged<CFErro
 extension Display {
 	public var displayMetadata: MdocDataModel18013.DisplayMetadata {
 		let logoMetadata = LogoMetadata(urlString: logo?.uri?.absoluteString, alternativeText: logo?.alternativeText)
-		return MdocDataModel18013.DisplayMetadata(name: name, localeIdentifier: locale?.identifier, logo: logoMetadata, description: description, backgroundColor: backgroundColor, textColor: textColor)
+		return MdocDataModel18013.DisplayMetadata(name: name, localeIdentifier: locale?.identifier, logo: logoMetadata, description: description, backgroundColor: backgroundColor, textColor: textColor, backgroundImageURL: backgroundImage?.url.absoluteString)
 	}
 }
 
@@ -175,8 +175,9 @@ extension Array where Element == DocClaimMetadata {
 		let groupIndex = keyPrefix?.count ?? 0
 		let arr = if let keyPrefix { filter { $0.claimPath.count > groupIndex && keyPrefix.elementsEqual($0.claimPath[0..<keyPrefix.count]) } } else { self }
 		let dictKeys = Dictionary(grouping: arr, by: { $0.claimPath[groupIndex]} )
-		let displayNames = dictKeys.compactMapValues { $0.first?.display?.getName(uiCulture) }
-		let mandatory =  dictKeys.compactMapValues { $0.first?.isMandatory }
+		let exactPathLength = groupIndex + 1
+		let displayNames = dictKeys.compactMapValues { $0.first(where: { $0.claimPath.count == exactPathLength })?.display?.getName(uiCulture) }
+		let mandatory =  dictKeys.compactMapValues { $0.first(where: { $0.claimPath.count == exactPathLength })?.isMandatory }
 		return (displayNames, mandatory, arr)
 	}
 }
@@ -372,5 +373,39 @@ extension DocClaim {
 	}
 	var claimPaths: [ClaimPath] {
 		if let children { children.map(\.claimPath) } else { [claimPath] }
+	}
+}
+
+extension DocClaimsModelConfiguration {
+	init(from model: DocClaimsModel) {
+		self.init(
+			id: model.id, createdAt: model.createdAt, docType: model.docType,
+			displayName: model.displayName, display: model.display, issuerDisplay: model.issuerDisplay,
+			credentialIssuerIdentifier: model.credentialIssuerIdentifier,
+			configurationIdentifier: model.configurationIdentifier,
+			validFrom: model.validFrom, validUntil: model.validUntil,
+			statusIdentifier: model.statusIdentifier,
+			credentialsUsageCounts: model.credentialsUsageCounts,
+			credentialPolicy: model.credentialPolicy, secureAreaName: model.secureAreaName,
+			modifiedAt: model.modifiedAt, ageOverXX: model.ageOverXX,
+			docClaims: model.docClaims, docDataFormat: model.docDataFormat,
+			hashingAlg: model.hashingAlg, nameSpaces: model.nameSpaces
+		)
+	}
+
+	func withDocClaims(_ docClaims: [DocClaim]) -> DocClaimsModelConfiguration {
+		DocClaimsModelConfiguration(
+			id: id, createdAt: createdAt, docType: docType,
+			displayName: displayName, display: display, issuerDisplay: issuerDisplay,
+			credentialIssuerIdentifier: credentialIssuerIdentifier,
+			configurationIdentifier: configurationIdentifier,
+			validFrom: validFrom, validUntil: validUntil,
+			statusIdentifier: statusIdentifier,
+			credentialsUsageCounts: credentialsUsageCounts,
+			credentialPolicy: credentialPolicy, secureAreaName: secureAreaName,
+			modifiedAt: modifiedAt, ageOverXX: ageOverXX,
+			docClaims: docClaims, docDataFormat: docDataFormat,
+			hashingAlg: hashingAlg, nameSpaces: nameSpaces
+		)
 	}
 }
