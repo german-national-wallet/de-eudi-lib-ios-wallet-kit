@@ -147,27 +147,21 @@ extension OpenId4VCIService {
 		let issuer = try await getIssuerForWalletAppCompatibility(offer: offer, nonce: nonce)
 		let pkceVerifier = try PKCEVerifier(codeVerifier: model.pckeCodeVerifier, codeVerifierMethod: model.pckeCodeVerifierMethod)
 		let authorizationCodeURL = try AuthorizationCodeURL(urlString: pendingDoc.authorizePresentationUrl ?? "")
-		let request = try AuthorizationCodeRetrieved(
-			credentials: [.init(value: model.configuration.configurationIdentifier.value)],
-			authorizationCode: IssuanceAuthorization(authorizationCode: authorizationCode),
-			pkceVerifier: pkceVerifier,
-			configurationIds: [model.configuration.configurationIdentifier],
-			dpopNonce: nil,
-			state: model.state
-		)
-		let preparedRequest = AuthorizationRequested(
-			credentials: request.credentials,
+		let request = AuthorizationRequested(
+			credentials: [try .init(value: model.configuration.configurationIdentifier.value)],
 			authorizationCodeURL: authorizationCodeURL,
 			pkceVerifier: pkceVerifier,
-			state: request.state,
-			configurationIds: request.configurationIds
+			state: model.state,
+			configurationIds: [model.configuration.configurationIdentifier],
+			dpopNonce: nil
 		)
 		let authorized = try await issuer.authorizeWithAuthorizationCode(
+			serverState: request.state,
 			request: request,
-			preparedRequest: preparedRequest,
+			authorizationCode: try AuthorizationCode(value: authorizationCode),
+			authorizationDetailsInTokenRequest: .doNotInclude,
 			grant: try offer.grants ?? .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil))
 		)
-
 		let issuerName = offer.credentialIssuerMetadata.display.map(\.displayMetadata).getName(uiCulture) ?? offer.credentialIssuerIdentifier.url.host ?? offer.credentialIssuerIdentifier.url.absoluteString
 		let issuerIdentifier = offer.credentialIssuerIdentifier.url.absoluteString
 		let issuerLogoUrl = offer.credentialIssuerMetadata.display.map(\.displayMetadata).getLogo(uiCulture)?.uri?.absoluteString
