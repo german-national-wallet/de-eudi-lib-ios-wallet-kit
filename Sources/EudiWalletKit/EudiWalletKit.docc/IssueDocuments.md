@@ -97,15 +97,20 @@ let defaultOptions = try await wallet.getDefaultCredentialOptions(
 ```
 ### Resolving Credential offer
 
-The library provides the `resolveOfferUrlDocTypes(uriOffer:)` method that resolves the credential offer URI.
+The library provides the `resolveOfferUrlDocTypes(offerUri:authFlowRedirectionURI:)` method that resolves the credential offer URI.
 The method returns the resolved `OfferedIssuanceModel` object that contains the offer's data (offered document types, issuer name and transaction code specification for pre-authorized flow). The offer's data can be displayed to the
 user.
+
+When a pre-registered issuer can be resolved from `offerUri`, the method uses that issuer's `OpenId4VciConfiguration.issuerMetadataPolicy`.
 
 The following example shows how to resolve a credential offer:
 
 ```swift
- func resolveOfferUrlDocTypes(uriOffer: String, authFlowRedirectionURI: URL?) async throws -> OfferedIssuanceModel {
-    return try await wallet.resolveOfferUrlDocTypes(uriOffer: uriOffer, authFlowRedirectionURI: authFlowRedirectionURI)
+ func resolveOfferUrlDocTypes(offerUri: String, authFlowRedirectionURI: URL?) async throws -> OfferedIssuanceModel {
+    return try await wallet.resolveOfferUrlDocTypes(
+      offerUri: offerUri,
+      authFlowRedirectionURI: authFlowRedirectionURI
+    )
   }
 ```
 
@@ -115,8 +120,25 @@ The `txCodeValue` parameter is not used in the case of the authorization code fl
 The following example shows how to issue documents by offer URL:
 
 ```swift
+// Configure issuer with signed metadata policy and certificate chain trust
+let trust: CertificateChainTrust = TrustedChainValidator(iacaRoots: [eudic])
+let issuerMetadataPolicy: IssuerMetadataPolicy = .requireSigned(
+  issuerTrust: .byCertificateChain(certificateChainTrust: trust)
+)
+
+let config = OpenId4VciConfiguration(
+  credentialIssuerURL: "https://issuer.example.com",
+  clientId: "my-wallet",
+  issuerMetadataPolicy: issuerMetadataPolicy
+)
+
+let wallet = try EudiWallet(
+  eudiWalletConfig: EudiWalletConfiguration(trustedReaderCertificates: []),
+  openID4VciConfigurations: ["trusted_issuer": config]
+)
+
 // Resolve the offer to get document models with recommended credential options
-let offer = try await wallet.resolveOfferUrlDocTypes(uriOffer: offerUrl)
+let offer = try await wallet.resolveOfferUrlDocTypes(offerUri: offerUrl, authFlowRedirectionURI: nil)
 
 // Use the offered documents as-is with recommended settings, or customize them
 let customizedDocTypes = offer.docModels.map { docModel in
@@ -152,7 +174,7 @@ information. Specifically, the `txCodeSpec` field in the ``OfferedIssuanceModel`
 
 From the user's perspective, the application must provide a way to input the transaction code.
 
-After user acceptance of the offer, the selected documents can be issued using the `issueDocumentsByOfferUrl(offerUri:docTypes:docTypeKeyOptions:txCodeValue:)` method.
+After user acceptance of the offer, the selected documents can be issued using the `issueDocumentsByOfferUrl(offerUri:docTypes:txCodeValue:configuration:)` method.
 When the transaction code is provided, the issuance process can be resumed by calling the above-mentioned method and passing the transaction code in the `txCodeValue` parameter.
 
 ### Dynamic issuance

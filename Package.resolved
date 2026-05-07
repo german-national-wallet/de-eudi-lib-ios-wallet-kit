@@ -1,5 +1,5 @@
 {
-  "originHash" : "5c81fde5f84914c6a24b7a27a20fc2fc8ffe49a49b4ce5cb2c776298c6b269b8",
+  "originHash" : "07cc9229ecbf27b2eab540fed5781f267646f53c90734349293b75c0647c91e1",
   "pins" : [
     {
       "identity" : "cryptoswift",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-iso18013-data-model.git",
       "state" : {
-        "revision" : "ef6109faf36fbc310a3d9d32baf2e82470a57284",
-        "version" : "0.12.0"
+        "revision" : "87b0059b1da7b6c195fe78875637f7130cb4ac54",
+        "version" : "0.14.0"
       }
     },
     {
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-iso18013-data-transfer.git",
       "state" : {
-        "revision" : "952f7a9d2a46aa2846c136d7ad4d97df51e9cd6c",
-        "version" : "0.12.0"
+        "revision" : "89d420a992d5a3f95e83c3cb9095d15fdc8a47a1",
+        "version" : "0.14.0"
       }
     },
     {
@@ -33,8 +33,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-iso18013-security.git",
       "state" : {
-        "revision" : "e8fa624673650483c9ad8b536359846f776f44f1",
-        "version" : "0.12.0"
+        "revision" : "7cf15ba00a28a771cf15e2c8933972de9e4bc9e1",
+        "version" : "0.14.0"
       }
     },
     {
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-openid4vci-swift.git",
       "state" : {
-        "revision" : "9f42809488b56f588d8bf8a04c068b01ed6b9a3f",
-        "version" : "0.35.0"
+        "revision" : "225a3ae3fec28830c49382304551af829e98e070",
+        "version" : "0.35.1"
       }
     },
     {
@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-siop-openid4vp-swift.git",
       "state" : {
-        "revision" : "4dcafc85cca592ed066da846b1195b59214a63b8",
-        "version" : "0.32.1"
+        "revision" : "ba1c25c75301bc3cbc140a63067426954d6d873c",
+        "version" : "0.33.0"
       }
     },
     {
@@ -143,6 +143,24 @@
       "state" : {
         "revision" : "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
         "version" : "3.15.1"
+      }
+    },
+    {
+      "identity" : "swift-docc-plugin",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-docc-plugin",
+      "state" : {
+        "revision" : "e977f65879f82b375a044c8837597f690c067da6",
+        "version" : "1.4.6"
+      }
+    },
+    {
+      "identity" : "swift-docc-symbolkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-docc-symbolkit",
+      "state" : {
+        "revision" : "b45d1f2ed151d057b54504d653e0da5552844e34",
+        "version" : "1.0.0"
       }
     },
     {

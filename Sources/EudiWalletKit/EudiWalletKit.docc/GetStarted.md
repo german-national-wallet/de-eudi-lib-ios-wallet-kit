@@ -39,17 +39,23 @@ The wallet now supports multiple OpenID4VCI issuer configurations for enhanced f
 let issuerConfigurations: [String: OpenId4VciConfiguration] = [
     "eudi_pid_issuer": OpenId4VciConfiguration(
         credentialIssuerURL: "https://pid.issuer.example.com",
-        useDpopIfSupported: true,
+        requireDpop: true,
+        issuerMetadataPolicy: .requireSigned,
         dpopKeyOptions: KeyOptions(
             secureAreaName: "SecureEnclave", curve: .P256, accessControl: .requireUserPresence
         )
     ),
     "mdl_issuer": OpenId4VciConfiguration(
         credentialIssuerURL: "https://mdl.issuer.example.com",
-        useDpopIfSupported: false
+        requireDpop: false,
+        issuerMetadataPolicy: .ignoreSigned
     )
 ]
 
 // Register additional issuers after initialization
 try wallet.registerOpenId4VciServices(issuerConfigurations)
 ```
+
+Use `issuerMetadataPolicy` to control signed metadata handling per issuer:
+- `.requireSigned` for issuers that require signed metadata validation
+- `.ignoreSigned` for environments that still use unsigned metadata

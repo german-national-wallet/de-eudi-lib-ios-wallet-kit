@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023 European Commission
+ * Copyright (c) 2026 European Commission
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,9 +25,13 @@ import SwiftCBOR
 @testable import JOSESwift
 import eudi_lib_sdjwt_swift
 import SwiftyJSON
+import OpenID4VCI
 import OpenID4VP
+import OpenID4VCI
+import X509
 import enum OpenID4VP.ClaimPathElement
 import struct OpenID4VP.ClaimPath
+import protocol OpenID4VCI.Networking
 
 struct EudiWalletKitTests {
 
@@ -50,6 +54,18 @@ struct EudiWalletKitTests {
 		return (resolved, sdJwt.disclosures)
 	}
 
+	private func firstClaim(named name: String, in claims: [DocClaim]) -> DocClaim? {
+		for claim in claims {
+			if claim.name == name {
+				return claim
+			}
+			if let children = claim.children, let childClaim = firstClaim(named: name, in: children) {
+				return childClaim
+			}
+		}
+		return nil
+	}
+
 	@Test("Get claims from sd-jwt", arguments: ["mdl", "pid", "pid-address"])
 	func testParseJwt(dt: String) async throws {
 		let (claims, _) = try parseSdJwtClaims(for: dt)
@@ -60,15 +76,51 @@ struct EudiWalletKitTests {
 		}
 	}
 
+	@Test("Dev Python issuer metadata decodes SD-JWT mDL portrait as bytes")
+	func testDevPythonIssuerMetadataDecodesSdJwtMdlPortraitAsBytes() throws {
+		let issuerData = try #require(Data(name: "dev-python-openid-credential-issuer", ext: "json", from: Bundle.module))
+		let issuerMetadata = try JSONDecoder().decode(CredentialIssuerMetadata.self, from: issuerData)
+		let configurationIdentifier = try CredentialConfigurationIdentifier(value: "eu.europa.ec.eudi.mdl_mdoc")
+		let credentialSupported = try #require(issuerMetadata.credentialsSupported[configurationIdentifier])
+
+		guard case .msoMdoc(let configuration) = credentialSupported else {
+			Issue.record("Expected mso_mdoc metadata for \(configurationIdentifier.value)")
+			return
+		}
+
+		let credentialMetadata = try #require(configuration.credentialMetadata)
+		let claimMetadata = credentialMetadata.claims.map(\.metadata)
+		let portraitMetadata = try #require(claimMetadata.first { $0.claimPath == ["org.iso.18013.5.1", "portrait"] })
+		#expect(portraitMetadata.valueType == "jpeg")
+
+		let docMetadata = DocMetadata(credentialIssuerIdentifier: issuerMetadata.credentialIssuerIdentifier.url.absoluteString, configurationIdentifier: configurationIdentifier.value, docType: configuration.docType, display: credentialMetadata.display.map(\.displayMetadata), issuerDisplay: issuerMetadata.display.map(\.displayMetadata), claims: claimMetadata, authorizedRequestData: nil, keyOptions: nil, credentialOptions: nil)
+		let sdJwtData = try #require(Data(name: "sjwt-mdl", ext: "txt", from: Bundle.module))
+		let document = WalletStorage.Document(id: "sjwt-mdl", docType: configuration.docType, docDataFormat: .sdjwt, data: sdJwtData, docKeyInfo: nil, createdAt: .now, metadata: docMetadata.toData(), displayName: nil, status: .issued)
+
+		let model = try #require(StorageManager.toSdJwtDocModel(doc: document, uiCulture: "en"))
+		#expect(model.docType == "org.iso.18013.5.1.mDL")
+		#expect(model.docDataFormat == .sdjwt)
+
+		let portrait = try #require(firstClaim(named: "portrait", in: model.docClaims))
+		#expect(portrait.path == ["verified_claims", "claims", "org.iso.18013.5.1", "portrait"])
+		#expect(portrait.stringValue == "10369 bytes")
+
+		if case .bytes(let bytes) = portrait.dataValue {
+			#expect(bytes.count == 10369)
+			#expect(Array(bytes.prefix(4)) == [0xff, 0xd8, 0xff, 0xe0])
+		} else {
+			Issue.record("Expected portrait to decode as bytes, got \(portrait.dataValue)")
+		}
+	}
+
 	@Test("Get docType from mdoc", arguments: ["mdl"])
 	func testParseMdoc(dt: String) throws {
 		guard let data = Data(name: "mdoc-\(dt)", ext: "txt", from: Bundle.module) else {
 			throw NSError(domain: "TestError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Resource file not found: mdoc-\(dt).txt"])
 		}
 		let strData = try #require(String(data: data, encoding: .utf8))
-		let base64Data = try #require(Data(base64URLEncoded: strData))
-		let dr = try DeviceResponse(data: [UInt8](base64Data))
-		let iss = try #require(dr.documents?.first?.issuerSigned)
+		let base64Data = try #require(Data(base64URLEncoded: strData.removeWhitespaceAndNewlines()))
+		let iss: IssuerSigned = try IssuerSigned(data: [UInt8](base64Data))
 		#expect("org.iso.18013.5.1.mDL" == iss.issuerAuth.mso.docType)
 	}
 
@@ -85,7 +137,7 @@ struct EudiWalletKitTests {
 				guard let name = d["name"].string else { return nil }
 				return DisplayMetadata(name: name, localeIdentifier: d["locale"].string, logo: nil, description: nil, backgroundColor: nil, textColor: nil)
 			}
-			return DocClaimMetadata(display: displayArr, isMandatory: claimJson["mandatory"].bool, claimPath: path)
+			return DocClaimMetadata(display: displayArr, isMandatory: claimJson["mandatory"].bool, claimPath: path, valueType: claimJson["value_type"].string)
 		}
 		#expect(!claimMetadata.isEmpty)
 
@@ -144,7 +196,7 @@ struct EudiWalletKitTests {
 			.filter { meta in docClaims.contains { $0.path == meta.claimPath } }
 			.map { $0.claimPath.last! }
 
-		let actualOrder = reordered.docClaims.map(\.name)
+		let actualOrder = reordered.docClaims.map { $0.name }
 		#expect(actualOrder == expectedOrder)
 
 		// Verify order values are sequential
@@ -178,13 +230,52 @@ struct EudiWalletKitTests {
 	    #expect(keySign.publicKey.isValidSignature(ecdsaSignature, for: signingInput), "Signature is invalid")
 	}
 
+	@Test("Data URL byte claims decode as bytes")
+	func testDataUrlByteClaimDecodesAsBytes() throws {
+		let claimMetadata = [DocClaimMetadata(display: nil, isMandatory: true, claimPath: ["photo"], valueType: "jpeg")]
+		let json = JSON(parseJSON: #"{ "photo": "data:image/jpeg;base64,/9j/4A==" }"#)
+		let claims = try #require(json.toClaimsArray(pathPrefix: [], claimMetadata, nil)?.0)
+		let photo = try #require(claims.first { $0.name == "photo" })
+		#expect(photo.stringValue == "4 bytes")
+		#expect(photo.isOptional == false)
+		if case .bytes(let bytes) = photo.dataValue {
+			#expect(bytes == [0xff, 0xd8, 0xff, 0xe0])
+		} else {
+			Issue.record("Expected data URL photo claim to decode as bytes, got \(photo.dataValue)")
+		}
+	}
+
+	@Test("Wrapped PNG data URL byte claims decode as bytes")
+	func testWrappedPngDataUrlByteClaimDecodesAsBytes() throws {
+		let claimMetadata = [DocClaimMetadata(display: nil, isMandatory: true, claimPath: ["photo"], valueType: "image/png")]
+		let dataUrl = """
+		data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAB4AAAAeCAIAA
+		AC0Ujn1AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAA
+		DsMAAA7DAcdvqGQAAAEDSURBVEhLtZJBEoMwDAP7lr6nn+0LqUGChsVOwoG
+		dvTSSNRz6Wh7jxvT7+wn9Y4LZae0e+rXLeBqjh45rBtOYgy4V9KYxlOpqRj
+		mNiY4+uJBP41gOI5BM40w620AknTVwGgfSWQMK0tnOaRpV6ewCatLZxn8aJ
+		emsAGXp7JhGLBX1wYlUtE4jkIpnwKGM9xeepG7mwblMpl2/CUbCJ7+6CnQz
+		Aw5lvD/8DxGIpbMClKWzdjpASTq7gJp0tnGaDlCVzhpQkM52OB3gQDrbQCS
+		dNSTTAc7kMAL5dIDjjj64UE4HmEh1NaM3HWAIulQwmA4wd+i4ZjwdYDR00G
+		qWsyPrizLD76QCPOHqP2cAAAAAElFTkSuQmCC
+		""".removeWhitespaceAndNewlines()
+		let json = JSON(["photo": dataUrl])
+		let claims = try #require(json.toClaimsArray(pathPrefix: [], claimMetadata, nil)?.0)
+		let photo = try #require(claims.first { $0.name == "photo" })
+		#expect(photo.stringValue == "365 bytes")
+		if case .bytes(let bytes) = photo.dataValue {
+			#expect(bytes.count == 365)
+			#expect(Array(bytes.prefix(8)) == [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+			#expect(Array(bytes[16..<24]) == [0x00, 0x00, 0x00, 0x1e, 0x00, 0x00, 0x00, 0x1e])
+		} else {
+			Issue.record("Expected wrapped PNG data URL photo claim to decode as bytes, got \(photo.dataValue)")
+		}
+	}
 
 	@Test("Sex field displays male/female for both number and string JSON types")
 	func testSexFieldConversion() throws {
 		// When sex is a JSON number
-		let jsonNumber = JSON(parseJSON: """
-		{ "sex": 1 }
-		""")
+		let jsonNumber = JSON(parseJSON: "{ \"sex\": 1 }")
 		let claimMetadata: [DocClaimMetadata]? = nil
 		let uiCulture: String? = nil
 		let numberClaims = jsonNumber.toClaimsArray(pathPrefix: [], claimMetadata, uiCulture)?.0
@@ -197,9 +288,7 @@ struct EudiWalletKitTests {
 			Issue.record("Expected .string data value for sex number claim")
 		}
 		// When sex is a JSON string (Python issuer encodes as string)
-		let jsonString = JSON(parseJSON: """
-		{ "sex": "1" }
-		""")
+		let jsonString = JSON(parseJSON: "{ \"sex\": \"1\" }")
 		let stringClaims = jsonString.toClaimsArray(pathPrefix: [], claimMetadata, uiCulture)?.0
 		let stringSex = stringClaims?.first(where: { $0.name == "sex" })
 		#expect(stringSex != nil)
@@ -210,9 +299,7 @@ struct EudiWalletKitTests {
 			Issue.record("Expected .string data value for sex string claim")
 		}
 		// Female value
-		let jsonFemale = JSON(parseJSON: """
-		{ "sex": "2" }
-		""")
+		let jsonFemale = JSON(parseJSON: "{ \"sex\": \"2\" }")
 		let femaleClaims = jsonFemale.toClaimsArray(pathPrefix: [], claimMetadata, uiCulture)?.0
 		let femaleSex = femaleClaims?.first(where: { $0.name == "sex" })
 		if case .string(let display) = femaleSex?.dataValue {
@@ -222,33 +309,104 @@ struct EudiWalletKitTests {
 		}
 	}
 
+	@Test("Issued mDOC mDL credential validation")
+	func testValidateIssuedMdocCredential() async throws {
+		let storageService = TestDataStorageService()
+		let service = try makeVciService(storageService: storageService)
+		let document = try makeDocument(fromResource: "mdoc-mdl", docDataFormat: .cbor, docType: "org.iso.18013.5.1.mDL")
+		try await service.validateIssuedDocuments(document, batch: nil, publicKeys: [])
+	}
+
+	@Test("Issued SD-JWT PID credential validation")
+	func testValidateIssuedSdJwtCredential() async throws {
+		let storageService = TestDataStorageService()
+		let service = try makeVciService(storageService: storageService)
+		let document = try makeDocument(fromResource: "sjwt-pid", docDataFormat: .sdjwt, docType: "urn:eu:europa:ec:eudi:pid:1")
+		try await service.validateIssuedDocuments(document, batch: nil, publicKeys: [])
+	}
+
+	@Test("createKeyBatchWithAttestation returns keys with matching attestation input")
+	func testCreateKeyBatchWithAttestation() async throws {
+		let storageService = TestDataStorageService()
+		let provider = RecordingWalletAttestationsProvider()
+		let wallet = try EudiWallet(
+			eudiWalletConfig: EudiWalletConfiguration(serviceName: "test.createKeyBatchWithAttestation"),
+			storageService: storageService,
+			openID4VciConfigurations: [
+				"attested_issuer": OpenId4VciConfiguration(
+					credentialIssuerURL: "https://issuer.example.com",
+					keyAttestationsConfig: KeyAttestationConfiguration(walletAttestationsProvider: provider),
+					requirePAR: false,
+					requireDpop: false
+				)
+			],
+			secureAreas: [SoftwareSecureArea.create(storage: InMemorySecureKeyStorage())]
+		)
+		let result = try await wallet.createKeyBatchWithAttestation(
+			issuerName: "attested_issuer",
+			id: UUID().uuidString,
+			credentialOptions: CredentialOptions(credentialPolicy: .rotateUse, batchSize: 2),
+			keyOptions: KeyOptions(curve: .P256, secureAreaName: SoftwareSecureArea.name),
+			nonce: "test-nonce"
+		)
+
+		#expect(result.keys.count == 2)
+		#expect(result.keyAttestation == RecordingWalletAttestationsProvider.attestation)
+		let request = try #require(provider.lastRequest)
+		#expect(request.nonce == "test-nonce")
+		#expect(request.keyThumbprints.count == 2)
+
+		let resultKeyThumbprints = try result.keys.map {
+			try ECPublicKey(publicKey: try $0.toSecKey(), additionalParameters: ["use": "sig"]).thumbprint(algorithm: .SHA256)
+		}
+		#expect(request.keyThumbprints == resultKeyThumbprints)
+	}
+
+	private func makeVciService(storageService: TestDataStorageService, issuerURL: String = "https://dev.issuer.eudiw.dev") throws -> OpenId4VciService {
+		let networking = TestNetworking(metadata: try makeSdJwtIssuerMetadata(forResource: "sjwt-pid", issuerURL: issuerURL))
+		let storage = StorageManager(storageService: storageService)
+		let config = OpenId4VciConfiguration(credentialIssuerURL: issuerURL, requirePAR: true, requireDpop: true)
+		return try OpenId4VciService(uiCulture: nil, config: config, networking: networking, storage: storage, storageService: storageService)
+	}
+
+	private func makeDocument(fromResource resourceName: String, docDataFormat: DocDataFormat, docType: String) throws -> WalletStorage.Document {
+		var original = Data(name: resourceName, ext: "txt", from: Bundle.module)!
+		if docDataFormat == .cbor {
+			let originalBase64Url = try #require(String(data: original, encoding: .utf8)).trimmingCharacters(in: .whitespacesAndNewlines)
+			original = try #require(Data(base64URLEncoded: originalBase64Url))
+		}
+		return WalletStorage.Document(id: UUID().uuidString, docType: docType, docDataFormat: docDataFormat,
+			data: original, docKeyInfo: nil, createdAt: .now, metadata: nil, displayName: nil, status: .issued)
+	}
+
+	private func makeSdJwtIssuerMetadata(forResource resourceName: String, issuerURL: String) throws -> Data {
+		let serialized = try #require(String(data: Data(name: resourceName, ext: "txt", from: Bundle.module)!, encoding: .utf8))
+		let issuerJwkData = try makeIssuerJwkData(from: serialized)
+		let ec = try issuerJwkData.ecPublicKeyComponents()
+		let metadata: [String: Any] = ["issuer": issuerURL,
+			"jwks": [ "keys": ["crv": ec.crv, "x": ec.x.base64URLEncodedString(), "y": ec.y.base64URLEncodedString(), "use": "sig"] ] ]
+		return try JSONSerialization.data(withJSONObject: metadata)
+	}
+
+	private func makeIssuerJwkData(from serialized: String) throws -> Data {
+		let (header, _, _) = StorageManager.extractJWTParts(serialized)
+		let headerData = try #require(Data(base64URLEncoded: header))
+		let headerJson = try JSON(data: headerData)
+		let certificateBase64 = try #require(headerJson["x5c"].array?.first?.string)
+		let certificateData = try #require(Data(base64Encoded: certificateBase64))
+		let certificate = try Certificate(derEncoded: [UInt8](certificateData))
+		let keyData = Data(certificate.publicKey.subjectPublicKeyInfoBytes)
+		return keyData
+	}
+
 	@Test("JSON nested claim metadata labels only exact claim paths")
 	func testJsonNestedClaimMetadataUsesExactPathDisplay() throws {
 		let claimMetadata = [
-			DocClaimMetadata(
-				display: [DisplayMetadata(name: "Age over 12", localeIdentifier: "en", logo: nil, description: nil, backgroundColor: nil, textColor: nil)],
-				isMandatory: true,
-				claimPath: ["age_equal_or_over", "12"]
-			),
-			DocClaimMetadata(
-				display: [DisplayMetadata(name: "Age over 18", localeIdentifier: "en", logo: nil, description: nil, backgroundColor: nil, textColor: nil)],
-				isMandatory: true,
-				claimPath: ["age_equal_or_over", "18"]
-			),
-			DocClaimMetadata(
-				display: [DisplayMetadata(name: "Age over 21", localeIdentifier: "en", logo: nil, description: nil, backgroundColor: nil, textColor: nil)],
-				isMandatory: false,
-				claimPath: ["age_equal_or_over", "21"]
-			)
+			DocClaimMetadata(display: [DisplayMetadata(name: "Age over 12", localeIdentifier: "en", logo: nil, description: nil, backgroundColor: nil, textColor: nil)], isMandatory: true, claimPath: ["age_equal_or_over", "12"], valueType: nil),
+			DocClaimMetadata(display: [DisplayMetadata(name: "Age over 18", localeIdentifier: "en", logo: nil, description: nil, backgroundColor: nil, textColor: nil)], isMandatory: true, claimPath: ["age_equal_or_over", "18"], valueType: nil),
+			DocClaimMetadata(display: [DisplayMetadata(name: "Age over 21", localeIdentifier: "en", logo: nil, description: nil, backgroundColor: nil, textColor: nil)], isMandatory: false, claimPath: ["age_equal_or_over", "21"], valueType: nil)
 		]
-		let json = JSON(parseJSON: """
-		{
-		  "age_equal_or_over": {
-		    "18": true,
-		    "21": true
-		  }
-		}
-		""")
+		let json = JSON(parseJSON: "{\"age_equal_or_over\": { \"18\": true, \"21\": true }}")
 
 		let rootMetadata = claimMetadata.convertToJsonClaimMetadata("en", keyPrefix: [])
 		#expect(rootMetadata.displayNames["age_equal_or_over"] == nil)
@@ -276,6 +434,86 @@ struct EudiWalletKitTests {
 }
 
 // MARK: - Data Extension for Test Resources
+
+actor TestDataStorageService: DataStorageService {
+	func loadDocument(id: String, status: WalletStorage.DocumentStatus) async throws -> WalletStorage.Document? { nil }
+	func loadDocumentMetadata(id: String) async throws -> DocMetadata? { nil }
+	func loadDocuments(status: WalletStorage.DocumentStatus) async throws -> [WalletStorage.Document]? { [] }
+	func saveDocument(_ document: WalletStorage.Document, batch: [WalletStorage.Document]?, allowOverwrite: Bool) async throws {}
+	func deleteDocument(id: String, status: WalletStorage.DocumentStatus) async throws {}
+	func deleteDocuments(status: WalletStorage.DocumentStatus) async throws {}
+	func deleteDocumentCredential(id: String, index: Int) async throws {}
+}
+
+actor InMemorySecureKeyStorage: SecureKeyStorage {
+	private var keyInfoStorage: [String: [String: Data]] = [:]
+	private var keyDataStorage: [String: [String: Data]] = [:]
+
+	func readKeyInfo(id: String) async throws -> [String : Data] {
+		keyInfoStorage[id] ?? [:]
+	}
+
+	func readKeyData(id: String, index: Int) async throws -> [String : Data] {
+		keyDataStorage["\(id)_\(index)"] ?? [:]
+	}
+
+	func writeKeyInfo(id: String, dict: [String : Data]) async throws {
+		keyInfoStorage[id] = dict
+	}
+
+	func writeKeyDataBatch(id: String, startIndex: Int, dicts: [[String : Data]], keyOptions: KeyOptions?) async throws {
+		for (offset, dict) in dicts.enumerated() {
+			keyDataStorage["\(id)_\(startIndex + offset)"] = dict
+		}
+	}
+
+	func deleteKeyBatch(id: String, startIndex: Int, batchSize: Int) async throws {
+		for index in startIndex..<(startIndex + batchSize) {
+			keyDataStorage.removeValue(forKey: "\(id)_\(index)")
+		}
+	}
+
+	func deleteKeyInfo(id: String) async throws {
+		keyInfoStorage.removeValue(forKey: id)
+	}
+}
+
+final class RecordingWalletAttestationsProvider: WalletAttestationsProvider, @unchecked Sendable {
+	static let attestation = "test-key-attestation"
+
+	private(set) var lastRequest: (keyThumbprints: [String], nonce: String?)?
+
+	func getWalletAttestation(key: any JWK) async throws -> String {
+		Self.attestation
+	}
+
+	func getKeysAttestation(keys: [any JWK], nonce: String?) async throws -> String {
+		lastRequest = (try keys.map {
+			guard let publicKey = $0 as? ECPublicKey else {
+				throw WalletError(description: "Expected ECPublicKey for attestation")
+			}
+			return try publicKey.thumbprint(algorithm: .SHA256)
+		}, nonce)
+		return Self.attestation
+	}
+}
+
+final class TestNetworking: Networking {
+	private let metadata: Data
+
+	init(metadata: Data) {
+		self.metadata = metadata
+	}
+
+	func data(from url: URL) async throws -> (Data, URLResponse) {
+		let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: [:])!
+		return (metadata, response)
+	}
+
+	func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+		try await data(from: request.url ?? URL(string: "https://example.com")!)
+	}
+}
 
 extension Data {
 	init?(name: String, ext: String, from bundle: Bundle) {
