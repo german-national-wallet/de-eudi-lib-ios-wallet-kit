@@ -867,11 +867,12 @@ public actor OpenId4VciService {
 		}
 		let expectedIssuer = try expectedSdJwtIssuerURL()
 		let signedSdJwt = try CompactParser().getSignedSdJwt(serialisedString: serialized)
-		try validateSdJwtIssuer(serialized, expectedIssuer: expectedIssuer)
+		let x5cChain = signedSdJwt.jwt.protectedHeader.x509CertificateChain
+		try validateSdJwtIssuer(serialized, expectedIssuer: expectedIssuer, requireIssuer: x5cChain?.isEmpty != false)
 		let verifier = SDJWTVerifier(sdJwt: signedSdJwt)
 		// Determine the issuer public key: prefer x5c certificate chain, fall back to metadata
 		let issuerKey: any KeyExpressible
-		if let x5cChain = signedSdJwt.jwt.protectedHeader.x509CertificateChain, !x5cChain.isEmpty {
+		if let x5cChain, !x5cChain.isEmpty {
 			issuerKey = try getIssuerKey(from: x5cChain)
 		} else {
 			let metadataFetcher = SdJwtVcIssuerMetaDataFetcher(session: URLSession.shared)
@@ -908,14 +909,25 @@ public actor OpenId4VciService {
 		return issuerURL
 	}
 
-	private func validateSdJwtIssuer(_ serialized: String, expectedIssuer: URL) throws {
+	/// TODO: get rid of our custom solution once this upstream issue is fixed: https://github.com/eu-digital-identity-wallet/eudi-lib-ios-wallet-kit/issues/350
+	private func validateSdJwtIssuer(_ serialized: String, expectedIssuer: URL, requireIssuer: Bool) throws {
 		let (_, payload, _) = StorageManager.extractJWTParts(serialized)
 		guard let payloadData = Data(base64URLEncoded: payload) else {
 			throw PresentationSession.makeError(str: "Failed to decode SD-JWT payload")
 		}
 		let payloadJson = try JSON(data: payloadData)
-		guard let issuer = payloadJson["iss"].string, URL(string: issuer) != nil else {
+		guard let issuer = payloadJson["iss"].string else {
+			if requireIssuer {
+				throw PresentationSession.makeError(str: "Issued SD-JWT is missing a valid issuer")
+			}
+			logger.warning("Issued SD-JWT is missing iss; accepting x5c-backed credential for WalletApp compatibility")
+			return
+		}
+		guard let issuerURL = URL(string: issuer) else {
 			throw PresentationSession.makeError(str: "Issued SD-JWT is missing a valid issuer")
+		}
+		guard normalized(url: issuerURL) == normalized(url: expectedIssuer) else {
+			throw PresentationSession.makeError(str: "Issued SD-JWT issuer does not match expected issuer")
 		}
 	}
 	/// Returns the public key from the leaf certificate.

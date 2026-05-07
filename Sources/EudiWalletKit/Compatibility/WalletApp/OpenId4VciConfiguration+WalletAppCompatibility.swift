@@ -37,6 +37,7 @@ extension OpenId4VciConfiguration {
 			authorizeIssuanceConfig: authorizeIssuanceConfig,
 			requirePAR: requirePAR,
 			clientAttestationPoPBuilder: clientAttestationPoPBuilder,
+			issuerMetadataPolicy: issuerMetadataPolicy,
 			requireDpop: requireDpop
 		)
 	}
