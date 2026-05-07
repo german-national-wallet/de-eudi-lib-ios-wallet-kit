@@ -11,7 +11,7 @@ import Security
 import WalletStorage
 import class eudi_lib_sdjwt_swift.CompactParser
 
-extension OpenId4VCIService {
+extension OpenId4VciService {
 	func issuePAR(_ docTypeIdentifier: DocTypeIdentifier, credentialOptions: CredentialOptions?, keyOptions: KeyOptions? = nil, promptMessage: String? = nil) async throws -> WalletStorage.Document? {
 		let usedCredentialOptions = try await validateCredentialOptions(docTypeIdentifier: docTypeIdentifier, credentialOptions: credentialOptions)
 		try await prepareIssuing(
@@ -169,7 +169,7 @@ extension OpenId4VCIService {
 		return try await withThrowingTaskGroup(of: WalletStorage.Document.self) { group in
 			for (index, docType) in docTypes.enumerated() {
 				group.addTask {
-					let service = try OpenId4VCIService(
+					let service = try OpenId4VciService(
 						uiCulture: uiCulture,
 						config: config,
 						networking: networking,
