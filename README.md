@@ -145,14 +145,16 @@ The wallet now supports multiple OpenID4VCI issuer configurations for enhanced f
 let issuerConfigurations: [String: OpenId4VciConfiguration] = [
     "eudi_pid_issuer": OpenId4VciConfiguration(
         credentialIssuerURL: "https://pid.issuer.example.com",
-        useDpopIfSupported: true,
+    requireDpop: true,
+    issuerMetadataPolicy: .requireSigned,
         dpopKeyOptions: KeyOptions(
             secureAreaName: "SecureEnclave", curve: .P256, accessControl: .requireUserPresence
         )
     ),
     "mdl_issuer": OpenId4VciConfiguration(
         credentialIssuerURL: "https://mdl.issuer.example.com",
-        useDpopIfSupported: false
+    requireDpop: false,
+    issuerMetadataPolicy: .ignoreSigned
     )
 ]
 
@@ -170,7 +172,7 @@ try wallet.registerOpenId4VciServices([
 ])
 ```
 
-The `useDpopIfSupported` property controls whether to use DPoP when the issuer supports it. The `dpopKeyOptions` property allows you to specify key generation parameters for DPoP keys, including the secure area, curve type and user authentication options.
+The `requireDpop` property controls whether issuance should halt when DPoP is not available. The `issuerMetadataPolicy` property controls signed metadata handling per issuer (`.ignoreSigned` or `.requireSigned`). The `dpopKeyOptions` property allows you to specify key generation parameters for DPoP keys, including the secure area, curve type and user authentication options.
 
 ### OAuth 2.0 Attestation-Based Client Authentication
 
@@ -208,7 +210,8 @@ let config = OpenId4VciConfiguration(
         ),
         popKeyDuration: 300  // PoP JWT validity in seconds (default: 300)
     ),
-    useDpopIfSupported: true
+    requireDpop: true,
+    issuerMetadataPolicy: .requireSigned
 )
 
 let walletConfig = EudiWalletConfiguration(
@@ -232,6 +235,21 @@ When configured, the wallet will:
 2. Obtain a wallet attestation JWT bound to the public key
 3. Create attestation PoP JWTs for authorization requests
 4. Include key attestations when issuing credentials
+
+If you need the generated keys and their batch attestation outside the issuance flow, use the `createKeyBatchWithAttestation` method to create a batch of keys with a single attestation:
+
+```swift
+let result = try await wallet.createKeyBatchWithAttestation(
+  issuerName: "attested_issuer",
+  id: UUID().uuidString,
+  credentialOptions: CredentialOptions(credentialPolicy: .rotateUse, batchSize: 2),
+  keyOptions: KeyOptions(secureAreaName: SoftwareSecureArea.name, curve: .P256),
+  nonce: "issuer-provided-nonce"
+)
+
+let keys = result.keys
+let keyAttestationJwt = result.keyAttestation
+```
 
 ## Manage documents
 
@@ -390,15 +408,20 @@ let defaultOptions = try await wallet.getDefaultCredentialOptions(
 ```
 ### Resolving Credential offer
 
-The library provides the `resolveOfferUrlDocTypes(uriOffer:)` method that resolves the credential offer URI.
+The library provides the `resolveOfferUrlDocTypes(offerUri:authFlowRedirectionURI:)` method that resolves the credential offer URI.
 The method returns the resolved `OfferedIssuanceModel` object that contains the offer's data (offered document types, issuer name and transaction code specification for pre-authorized flow). The offer's data can be displayed to the
 user.
+
+When a pre-registered issuer can be resolved from `offerUri`, the method uses that issuer's `OpenId4VciConfiguration.issuerMetadataPolicy`.
 
 The following example shows how to resolve a credential offer:
 
 ```swift
- func resolveOfferUrlDocTypes(uriOffer: String, authFlowRedirectionURI: URL?) async throws -> OfferedIssuanceModel {
-    return try await wallet.resolveOfferUrlDocTypes(uriOffer: uriOffer, authFlowRedirectionURI: authFlowRedirectionURI)
+ func resolveOfferUrlDocTypes(offerUri: String, authFlowRedirectionURI: URL?) async throws -> OfferedIssuanceModel {
+    return try await wallet.resolveOfferUrlDocTypes(
+      offerUri: offerUri,
+      authFlowRedirectionURI: authFlowRedirectionURI
+    )
   }
 ```
 
@@ -409,7 +432,7 @@ The following example shows how to issue documents by offer URL:
 
 ```swift
 // Resolve the offer to get document models with recommended credential options
-let offer = try await wallet.resolveOfferUrlDocTypes(uriOffer: offerUrl)
+let offer = try await wallet.resolveOfferUrlDocTypes(offerUri: offerUrl, authFlowRedirectionURI: nil)
 
 // Use the offered documents as-is with recommended settings, or customize them
 let customizedDocTypes = offer.docModels.map { docModel in
@@ -428,7 +451,42 @@ let newDocs = try await wallet.issueDocumentsByOfferUrl(
 )
 ```
 
+#### Configuring Issuer Metadata Policy with Certificate Chain Trust
 
+When you need strict validation of issuer metadata signatures using certificate chains (such as IACA root certificates), you can configure the issuer's `OpenId4VciConfiguration` with a signed metadata policy and certificate chain trust validator:
+
+```swift
+// Create a certificate chain trust validator with IACA root certificates
+let trust: CertificateChainTrust = TrustedChainValidator(iacaRoots: [eudic])
+
+// Create an issuer metadata policy that requires signed metadata
+let issuerMetadataPolicy: IssuerMetadataPolicy = .requireSigned(
+  issuerTrust: .byCertificateChain(certificateChainTrust: trust)
+)
+
+// Configure the issuer with the strict signed metadata policy
+let config = OpenId4VciConfiguration(
+  credentialIssuerURL: "https://issuer.example.com",
+  clientId: "my-wallet",
+  issuerMetadataPolicy: issuerMetadataPolicy
+)
+
+// Use this configuration when initializing the wallet
+let walletConfig = EudiWalletConfiguration(
+  trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
+)
+let wallet = try EudiWallet(
+  eudiWalletConfig: walletConfig,
+  openID4VciConfigurations: ["trusted_issuer": config]
+)
+```
+
+The `IssuerMetadataPolicy` enum provides three validation strategies:
+- `.ignoreSigned`: Accept issuer metadata regardless of signature status (default)
+- `.preferSigned(issuerTrust:)`: Prefer signed metadata if available, fall back to unsigned
+- `.requireSigned(issuerTrust:)`: Strictly require signed metadata, reject unsigned metadata
+
+When using `.requireSigned`, the issuer's metadata signature must be valid against one of the IACA root certificates provided to the trust validator.
 
 ### Authorization code flow
 
@@ -446,7 +504,7 @@ information. Specifically, the `txCodeSpec` field in the `OfferedIssuanceModel` 
 
 From the user's perspective, the application must provide a way to input the transaction code.
 
-After user acceptance of the offer, the selected documents can be issued using the `issueDocumentsByOfferUrl(offerUri:docTypes:docTypeKeyOptions:txCodeValue:)` method.
+After user acceptance of the offer, the selected documents can be issued using the `issueDocumentsByOfferUrl(offerUri:docTypes:txCodeValue:configuration:)` method.
 When the transaction code is provided, the issuance process can be resumed by calling the above-mentioned method and passing the transaction code in the `txCodeValue` parameter.
 
 ### Dynamic issuance
@@ -551,7 +609,7 @@ involved, follow the guidelines found in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### License details
 
-Copyright (c) 2023 European Commission
+Copyright (c) 2026 European Commission
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

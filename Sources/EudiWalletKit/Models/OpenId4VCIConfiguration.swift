@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2023 European Commission
+Copyright (c) 2026 European Commission
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import SwiftyJSON
 import OpenID4VCI
 import MdocDataModel18013
 import MdocSecurity18013
+import Security
 import Copyable
 
 @Copyable
@@ -39,12 +40,18 @@ public struct OpenId4VciConfiguration: Sendable {
 	public let requirePAR: Bool
 	/// Whether to require DPoP (Demonstrating Proof-of-Possession)
 	public let requireDpop: Bool
+	/// Policy for handling signed issuer metadata fetched from `/.well-known/openid-credential-issuer`.
+	///
+	/// - `.ignoreSigned` (default): wallet sends `Accept: application/json` and only accepts plain JSON metadata. Backwards-compatible with all existing deployments.
+	/// - `.preferSigned(issuerTrust:)`: wallet sends `Accept: application/jwt, application/json`. If the issuer returns a signed JWT, the signature is verified against the supplied trust anchor; otherwise plain JSON is accepted as a fallback.
+	/// - `.requireSigned(issuerTrust:)`: wallet sends `Accept: application/jwt`. The issuer must return a signed JWT whose signature validates against the supplied trust anchor; plain JSON responses are rejected.
+	public let issuerMetadataPolicy: IssuerMetadataPolicy
 	/// Whether user authentication is required for credential issuance
 	public let userAuthenticationRequired: Bool
 	/// Key options for generating DPoP keys, if DPoP is used
 	public let dpopKeyOptions: KeyOptions?
 
-	public init(credentialIssuerURL: String?, clientId: String? = nil, keyAttestationsConfig: KeyAttestationConfiguration? = nil, authFlowRedirectionURI: URL? = nil, authorizeIssuanceConfig: AuthorizeIssuanceConfig = .favorScopes, requirePAR: Bool = true, requireDpop: Bool = true, cacheIssuerMetadata: Bool = true, userAuthenticationRequired: Bool = false, dpopKeyOptions: KeyOptions? = nil) {
+	public init(credentialIssuerURL: String?, clientId: String? = nil, keyAttestationsConfig: KeyAttestationConfiguration? = nil, authFlowRedirectionURI: URL? = nil, authorizeIssuanceConfig: AuthorizeIssuanceConfig = .favorScopes, requirePAR: Bool = true, requireDpop: Bool = true, issuerMetadataPolicy: IssuerMetadataPolicy = .ignoreSigned, cacheIssuerMetadata: Bool = true, userAuthenticationRequired: Bool = false, dpopKeyOptions: KeyOptions? = nil, trustedIssuerCertificates: [x5chain]? = nil) {
 		self.credentialIssuerURL = credentialIssuerURL
 		self.clientId = clientId ?? "wallet-dev"
 		self.keyAttestationsConfig = keyAttestationsConfig
@@ -52,6 +59,7 @@ public struct OpenId4VciConfiguration: Sendable {
 		self.authorizeIssuanceConfig = authorizeIssuanceConfig
 		self.requirePAR = requirePAR
 		self.requireDpop = requireDpop
+		self.issuerMetadataPolicy = issuerMetadataPolicy
 		self.userAuthenticationRequired = userAuthenticationRequired
 		self.dpopKeyOptions = dpopKeyOptions
 	}
@@ -121,7 +129,7 @@ extension OpenId4VciConfiguration {
 	func toOpenId4VCIConfig(credentialIssuerId: String, clientAttestationPopSigningAlgValuesSupported: [JWSAlgorithm]?) async throws -> OpenId4VCIConfig {
 		let client: Client = if let keyAttestationsConfig, clientAttestationPopSigningAlgValuesSupported != nil { try await makeAttestationClient(config: keyAttestationsConfig, credentialIssuerId: credentialIssuerId, algorithms: clientAttestationPopSigningAlgValuesSupported) } else { .public(id: clientId) }
 		let clientAttestationPoPBuilder: ClientAttestationPoPBuilder? = if keyAttestationsConfig != nil { DefaultClientAttestationPoPBuilder() } else { nil}
-		return OpenId4VCIConfig(client: client, authFlowRedirectionURI: authFlowRedirectionURI, authorizeIssuanceConfig: authorizeIssuanceConfig, requirePAR: requirePAR, clientAttestationPoPBuilder: clientAttestationPoPBuilder, requireDpop: requireDpop)
+		return OpenId4VCIConfig(client: client, authFlowRedirectionURI: authFlowRedirectionURI, authorizeIssuanceConfig: authorizeIssuanceConfig, requirePAR: requirePAR, clientAttestationPoPBuilder: clientAttestationPoPBuilder, issuerMetadataPolicy: issuerMetadataPolicy, requireDpop: requireDpop)
 	}
 
 	private func makeAttestationClient(config: KeyAttestationConfiguration, credentialIssuerId: String, algorithms: [JWSAlgorithm]?) async throws -> Client {
