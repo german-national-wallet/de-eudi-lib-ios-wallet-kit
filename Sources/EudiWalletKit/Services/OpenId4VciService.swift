@@ -96,9 +96,7 @@ public actor OpenId4VciService {
 		let publicKeys = try Self.makePublicJwks(from: publicCoseKeys, algorithm: algType)
 		let unlockData = try await issueReq.secureArea.unlockKey(id: issueReq.id)
 		var funcKeyAttestationJWT: FuncKeyAttestationJWT? = nil
-		// TODO: this was only checking `configuration.supportsAttestationProofType`
-		// but then attestation proof type might say not required and the credential will not be key bound
-		if config.keyAttestationsConfig != nil && !configuration.supportsJwtProofTypeWithoutAttestation {
+		if config.keyAttestationsConfig != nil, configuration.supportsAttestationProofType {
 			funcKeyAttestationJWT = { nonce in
 				try await self.getKeyAttestationJWTForWalletAppCompatibility(publicKeys, nonce: nonce)
 			}
