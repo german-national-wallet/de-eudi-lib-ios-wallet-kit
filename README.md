@@ -122,7 +122,8 @@ let config = EudiWalletConfiguration(
     trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
     deviceAuthMethod: .deviceSignature,
     uiCulture: "en",
-    logFileName: "wallet.log"
+    logFileName: "wallet.log",
+    bleTransferMode: .server  // .server (default), .client, or .both
 )
 let openId4VpConfig = OpenId4VpConfiguration(
     clientIdSchemes: [.x509SanDns, .x509Hash, .redirectUri],
@@ -542,6 +543,24 @@ let issuedDoc = try await wallet.requestDeferredIssuance(
 
 ## Presentation Service
 The [presentation service protocol](https://eu-digital-identity-wallet.github.io/eudi-lib-ios-wallet-kit/documentation/eudiwalletkit/presentationservice) abstracts the presentation flow. The [BlePresentationService](https://eu-digital-identity-wallet.github.io/eudi-lib-ios-wallet-kit/documentation/eudiwalletkit/blepresentationservice) and [OpenId4VpService](https://eu-digital-identity-wallet.github.io/eudi-lib-ios-wallet-kit/documentation/eudiwalletkit/openid4vpservice) classes implement the proximity and remote presentation flows respectively. The [PresentationSession](https://eu-digital-identity-wallet.github.io/eudi-lib-ios-wallet-kit/documentation/eudiwalletkit/presentationsession) class is used to wrap the presentation service and provide @Published properties for SwiftUI screens. The following example code demonstrates the initialization of a SwiftUI view with a new presentation session of a selected [flow type](https://eu-digital-identity-wallet.github.io/eudi-lib-ios-wallet-kit/documentation/eudiwalletkit/flowtype).
+
+### BLE Transfer Mode
+
+The `bleTransferMode` property of `EudiWalletConfiguration` controls the Bluetooth Low Energy role the holder device plays during proximity presentation:
+
+| Mode | Description |
+|------|-------------|
+| `.server` (default) | The holder device acts as a GATT peripheral (server). It advertises and waits for the reader to connect. |
+| `.client` | The holder device acts as a GATT central (client). It scans and connects to the reader's peripheral. |
+| `.both` | The holder device supports both peripheral server and central client modes simultaneously. |
+
+```swift
+// Configure BLE transfer mode
+let config = EudiWalletConfiguration(
+    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
+    bleTransferMode: .server  // default
+)
+```
 
 ```swift
 let session = eudiWallet.beginPresentation(flow: flow)

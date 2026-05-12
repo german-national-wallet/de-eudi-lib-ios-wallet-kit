@@ -1,3 +1,91 @@
+## v0.29.0
+
+### BLE Transfer Mode
+
+The `bleTransferMode` parameter of ``EudiWalletConfiguration`` controls the Bluetooth Low Energy (BLE) role used during proximity (ISO 18013-5) presentation:
+
+- **`.server`** (default): The holder device acts as a GATT peripheral (server), advertising and waiting for the reader to connect.
+- **`.client`**: The holder device acts as a GATT central (client), scanning and connecting to the reader's peripheral.
+- **`.both`**: The holder device supports both modes simultaneously and advertises both in the QR device engagement.
+
+## v0.28.3
+
+### Access Token Expiration Fix
+- Fixed access token expiration check and token refresh reason check.
+
+## v0.28.2
+
+### OpenID4VCI Auto-Registration
+- Added auto-registration for OpenID4VCI configuration and refactored service retrieval.
+
+## v0.28.1
+
+### Key Batch with Attestation
+- Added `EudiWallet.createKeyBatchWithAttestation` method to create a batch of keys with a single attestation.
+
+```swift
+let result = try await wallet.createKeyBatchWithAttestation(
+  issuerName: "attested_issuer",
+  id: UUID().uuidString,
+  credentialOptions: CredentialOptions(credentialPolicy: .rotateUse, batchSize: 2),
+  keyOptions: KeyOptions(secureAreaName: SoftwareSecureArea.name, curve: .P256),
+  nonce: "issuer-provided-nonce"
+)
+
+let keys = result.keys
+let keyAttestationJwt = result.keyAttestation
+```
+
+## v0.28.0
+
+### Issuer Metadata Policy and OpenID4VP v0.33.0
+- Added support for issuer metadata policy in `OpenId4VciConfiguration`.
+- Updated OpenID4VP dependency to v0.33.0.
+
+```swift
+let trust: CertificateChainTrust = TrustedChainValidator(iacaRoots: [eudic])
+let issuerMetadataPolicy: IssuerMetadataPolicy = .requireSigned(issuerTrust: .byCertificateChain(certificateChainTrust: trust))
+let config = OpenId4VciConfiguration(
+    credentialIssuerURL: "https://issuer.example.com",
+    clientId: "my-wallet",
+    issuerMetadataPolicy: issuerMetadataPolicy
+)
+```
+
+## v0.27.0
+
+### SD-JWT Validation and Issuer Trust Verification
+- Added SD-JWT validation during credential issuance.
+- Enhanced issuer trust verification.
+
+## v0.26.0
+
+### Claim Metadata and SD-JWT Image Handling
+- Enhanced claim metadata handling.
+- Added processing of image data from SD-JWT claims.
+
+## v0.25.2
+
+### SD-JWT Claim Metadata Refinement
+- Refined SD-JWT claim metadata handling to use exact claim paths for display names and mandatory status in JSON conversion.
+
+## v0.25.1
+
+### Access Token Reuse in Reissuance
+- Access token is now reused during reissuance flows.
+- Updated related dependencies.
+
+## v0.25.0
+
+### Background Image URL Support
+- Added support for `backgroundImageURL` in credential display metadata.
+
+## v0.24.1
+
+### OpenID4VCI 0.35.0 and AsWebOutcome Refactor
+- Updated `eudi-lib-ios-openid4vci-swift` to version 0.35.0.
+- Refactored `AsWebOutcome` to use state from server.
+
 ## v0.24.0
 
 ### OpenID4VP Partial Claim Presentation

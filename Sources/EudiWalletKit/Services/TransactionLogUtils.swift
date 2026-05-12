@@ -19,9 +19,9 @@ class TransactionLogUtils {
 		transactionLog = transactionLog.copy(timestamp: getTimestamp(), rawRequest: requestInfo.deviceRequestBytes, relyingParty: TransactionLogUtils.getRelyingParty(requestInfo), dataFormat: .cbor)
 	}
 
-	static func setCborTransactionLogResponseInfo(_ bleServerTransfer: MdocGattServer, transactionLog: inout TransactionLog) {
-		let sessionTranscript: Data? = if let stb = bleServerTransfer.sessionEncryption?.sessionTranscriptBytes { Data(stb) } else { nil }
-		transactionLog = transactionLog.copy(timestamp: getTimestamp(), status: .completed, rawResponse: bleServerTransfer.deviceResponseBytes, dataFormat: .cbor, sessionTranscript: sessionTranscript, docMetadata: bleServerTransfer.responseMetadata)
+	static func setCborTransactionLogResponseInfo(_ bleService: BlePresentationService, transactionLog: inout TransactionLog) {
+		let sessionTranscript: Data? = if let stb = bleService.sessionEncryption?.sessionTranscriptBytes { Data(stb) } else { nil }
+		transactionLog = transactionLog.copy(timestamp: getTimestamp(), status: .completed, rawResponse: bleService.deviceResponseBytes, dataFormat: .cbor, sessionTranscript: sessionTranscript, docMetadata: bleService.responseMetadata)
 	}
 
 	static func setTransactionLogResponseInfo(deviceResponseBytes: Data?, dataFormat: TransactionLog.DataFormat, sessionTranscript: Data?, responseMetadata: [Data?]?, transactionLog: inout TransactionLog) {

@@ -17,6 +17,7 @@ limitations under the License.
 import Foundation
 import MdocDataModel18013
 import MdocSecurity18013
+import MdocDataTransfer18013
 
 /// Configuration for EudiWallet
 public struct EudiWalletConfiguration: Sendable {
@@ -34,9 +35,15 @@ public struct EudiWalletConfiguration: Sendable {
 	public let uiCulture: String?
 	/// If not-nil, logging to the specified log file name will be configured
 	public let logFileName: String?
+	/// BLE transfer mode for proximity presentation. Controls the role the device plays during BLE data transfer.
+	/// - `.server` (default): The holder device acts as a GATT peripheral (server), advertising and waiting for the reader to connect.
+	/// - `.client`: The holder device acts as a GATT central (client), scanning and connecting to the reader's peripheral.
+	/// - `.both`: The holder device supports both peripheral server and central client modes simultaneously.
+	public let bleTransferMode: BleTransferMode
+	/// Default service name for the keychain, used if no service name is provided in the initializer
 	static let defaultServiceName: String = "eudiw"
 
-	public init(serviceName: String? = nil, accessGroup: String? = nil, userAuthenticationRequired: Bool = false, trustedReaderRootCertificates: [x5chain]? = nil, deviceAuthMethod: DeviceAuthMethod = .deviceSignature, uiCulture: String? = nil, logFileName: String? = nil) {
+	public init(serviceName: String? = nil, accessGroup: String? = nil, userAuthenticationRequired: Bool = false, trustedReaderRootCertificates: [x5chain]? = nil, deviceAuthMethod: DeviceAuthMethod = .deviceSignature, uiCulture: String? = nil, logFileName: String? = nil, bleTransferMode: BleTransferMode = .server) {
 		self.serviceName = serviceName ?? Self.defaultServiceName
 		self.accessGroup = accessGroup
         self.userAuthenticationRequired = userAuthenticationRequired
@@ -44,5 +51,6 @@ public struct EudiWalletConfiguration: Sendable {
 		self.deviceAuthMethod = deviceAuthMethod
 		self.uiCulture = uiCulture
 		self.logFileName = logFileName
+		self.bleTransferMode = bleTransferMode
 	}
 }
