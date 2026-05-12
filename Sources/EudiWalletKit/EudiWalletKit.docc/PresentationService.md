@@ -10,6 +10,28 @@ let session = eudiWallet.beginPresentation(flow: flow)
 ShareView(presentationSession: session)
 ```
 
+## BLE Transfer Mode
+
+For proximity presentation over BLE, the ``EudiWalletConfiguration/bleTransferMode`` property controls the role the holder device plays during BLE data transfer:
+
+- **`.server`** (default): The holder device acts as a GATT peripheral (server). It advertises and waits for the reader to connect.
+- **`.client`**: The holder device acts as a GATT central (client). It scans and connects to the reader's peripheral.
+- **`.both`**: The holder device supports both peripheral server and central client modes simultaneously, advertising the supported modes in the device engagement QR code.
+
+```swift
+let config = EudiWalletConfiguration(
+    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
+    bleTransferMode: .server  // default
+)
+let wallet = try! EudiWallet(eudiWalletConfig: config)
+```
+
+```swift
+let session = eudiWallet.beginPresentation(flow: flow)
+// pass the session to a SwiftUI view
+ShareView(presentationSession: session)
+```
+
 For OpenID4VP flows, partial DCQL claim presentation can be enabled through ``OpenId4VpConfiguration``. When ``OpenId4VpConfiguration/allowPresentingPartialClaims`` is `true`, claims that are not present in an otherwise matching credential are omitted instead of causing the presentation request to fail.
 
 ```swift

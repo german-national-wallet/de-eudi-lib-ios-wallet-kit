@@ -30,6 +30,23 @@ The ``EudiWallet`` class provides a unified API for the two user attestation pre
 	wallet.loadAllDocuments()
 ```
 
+### BLE Transfer Mode
+
+The `bleTransferMode` parameter of ``EudiWalletConfiguration`` controls the Bluetooth Low Energy role used during proximity (ISO 18013-5) presentation:
+
+- **`.server`** (default): The holder device acts as a GATT peripheral (server), advertising and waiting for the reader to connect.
+- **`.client`**: The holder device acts as a GATT central (client), scanning and connecting to the reader's peripheral.
+- **`.both`**: The holder device supports both modes simultaneously and advertises both in the QR device engagement.
+
+```swift
+let config = EudiWalletConfiguration(
+    serviceName: "my_wallet_app",
+    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
+    bleTransferMode: .server  // default; use .client or .both as needed
+)
+let wallet = try! EudiWallet(eudiWalletConfig: config)
+```
+
 ### OpenID4VCI Configuration
 
 The wallet now supports multiple OpenID4VCI issuer configurations for enhanced flexibility. You can configure the wallet with a dictionary of issuer configurations:
