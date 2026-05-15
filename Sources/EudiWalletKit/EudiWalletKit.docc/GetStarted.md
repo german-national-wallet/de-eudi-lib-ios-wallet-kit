@@ -32,7 +32,8 @@ The ``EudiWallet`` class provides a unified API for the two user attestation pre
 
 ### BLE Transfer Mode
 
-The `bleTransferMode` parameter of ``EudiWalletConfiguration`` controls the Bluetooth Low Energy role used during proximity (ISO 18013-5) presentation:
+The ``EudiWallet/bleTransferMode`` property controls the Bluetooth Low Energy role used during proximity (ISO 18013-5) presentation.
+You can set it during initialization via ``EudiWalletConfiguration/bleTransferMode`` or update it later on the wallet instance:
 
 - **`.server`** (default): The holder device acts as a GATT peripheral (server), advertising and waiting for the reader to connect.
 - **`.client`**: The holder device acts as a GATT central (client), scanning and connecting to the reader's peripheral.
@@ -45,6 +46,7 @@ let config = EudiWalletConfiguration(
     bleTransferMode: .server  // default; use .client or .both as needed
 )
 let wallet = try! EudiWallet(eudiWalletConfig: config)
+wallet.bleTransferMode = .client
 ```
 
 ### OpenID4VCI Configuration
