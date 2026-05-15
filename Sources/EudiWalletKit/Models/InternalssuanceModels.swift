@@ -35,10 +35,11 @@ struct CredentialConfiguration: Codable, Sendable {
 	let issuerDisplay: [DisplayMetadata]    
     let display: [DisplayMetadata]
     let claims: [Claim]
+    let credentialMetadata: ConfigurationCredentialMetadata?
    	let format: DocDataFormat
 	let defaultCredentialOptions: CredentialOptions
 
-	init(configurationIdentifier: CredentialConfigurationIdentifier, credentialIssuerIdentifier: String, docType: String? = nil, vct: String? = nil, scope: String? = nil, supportsAttestationProofType: Bool, supportsJwtProofTypeWithAttestation: Bool, supportsJwtProofTypeWithoutAttestation: Bool,  credentialSigningAlgValuesSupported: [String], dpopSigningAlgValuesSupported: [String]?, clientAttestationPopSigningAlgValuesSupported: [String]?, issuerDisplay: [DisplayMetadata], display: [DisplayMetadata], claims: [Claim], format: DocDataFormat, defaultCredentialOptions: CredentialOptions) {
+	init(configurationIdentifier: CredentialConfigurationIdentifier, credentialIssuerIdentifier: String, docType: String? = nil, vct: String? = nil, scope: String? = nil, supportsAttestationProofType: Bool, supportsJwtProofTypeWithAttestation: Bool, supportsJwtProofTypeWithoutAttestation: Bool,  credentialSigningAlgValuesSupported: [String], dpopSigningAlgValuesSupported: [String]?, clientAttestationPopSigningAlgValuesSupported: [String]?, issuerDisplay: [DisplayMetadata], display: [DisplayMetadata], claims: [Claim], credentialMetadata: ConfigurationCredentialMetadata? = nil, format: DocDataFormat, defaultCredentialOptions: CredentialOptions) {
 		self.configurationIdentifier = configurationIdentifier
 		self.credentialIssuerIdentifier = credentialIssuerIdentifier
 		self.docType = docType
@@ -53,6 +54,7 @@ struct CredentialConfiguration: Codable, Sendable {
 		self.issuerDisplay = issuerDisplay
 		self.display = display
 		self.claims = claims
+		self.credentialMetadata = credentialMetadata
 		self.format = format
 		self.defaultCredentialOptions = defaultCredentialOptions
 	}

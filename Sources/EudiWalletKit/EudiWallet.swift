@@ -49,6 +49,8 @@ public final class EudiWallet: ObservableObject, @unchecked Sendable {
 	let networkingVp: OpenID4VPNetworking
 	/// Optional model factory type to create custom stronly-typed models
 	public private(set) var modelFactory: (any DocClaimsDecodableFactory)?
+	/// Ble transfer mode
+	public var bleTransferMode: BleTransferMode = .server
 	public var zkSystemRepository: ZkSystemRepository?
 	//public static let defaultOpenId4VCIConfig =
 	/// Initialize a wallet instance using a configuration object.
@@ -61,6 +63,7 @@ public final class EudiWallet: ObservableObject, @unchecked Sendable {
 	///   - secureAreas: An array of secure areas. Optional.
 	///   - transactionLogger: Transaction logger for logging wallet operations. Optional.
 	///   - modelFactory: The factory for creating Mdoc models. Optional.
+	///   - zkSystemRepository: Repository for zk system parameters. Optional.
 	///
 	/// - Throws: An error if initialization fails.
 	///
@@ -79,6 +82,7 @@ public final class EudiWallet: ObservableObject, @unchecked Sendable {
 		let storageServiceObj = storageService ?? KeyChainStorageService(serviceName: self.eudiWalletConfig.serviceName, accessGroup: self.eudiWalletConfig.accessGroup)
 		self.modelFactory = modelFactory
 		self.zkSystemRepository = zkSystemRepository
+		self.bleTransferMode = eudiWalletConfig.bleTransferMode
 		storage = StorageManager(storageService: storageServiceObj, modelFactory: modelFactory)
 		if let secureAreas, !secureAreas.isEmpty {
 			for asa in secureAreas { SecureAreaRegistry.shared.register(secureArea: asa) }
@@ -557,7 +561,7 @@ public final class EudiWallet: ObservableObject, @unchecked Sendable {
 			let docIdToPresentInfo = try await storage.getDocIdsToPresentInfo(documents: documents)
 			switch flow {
 			case .ble:
-				let bleSvc = try await BlePresentationService(parameters: parameters, bleTransferMode: eudiWalletConfig.bleTransferMode)
+				let bleSvc = try await BlePresentationService(parameters: parameters, bleTransferMode: bleTransferMode)
 				return PresentationSession(presentationService: bleSvc, storageManager: storage, storageService: storage.storageService, docIdToPresentInfo: docIdToPresentInfo, documentKeyIndexes: parameters.documentKeyIndexes, userAuthenticationRequired: eudiWalletConfig.userAuthenticationRequired, transactionLogger: sessionTransactionLogger ?? transactionLogger)
 			case .openid4vp(let qrCode):
 				let openIdSvc = try await OpenId4VpService(parameters: parameters, qrCode: qrCode, openID4VpConfig: self.openID4VpConfig, networking: networkingVp)

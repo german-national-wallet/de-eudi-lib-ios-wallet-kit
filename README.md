@@ -546,7 +546,8 @@ The [presentation service protocol](https://eu-digital-identity-wallet.github.io
 
 ### BLE Transfer Mode
 
-The `bleTransferMode` property of `EudiWalletConfiguration` controls the Bluetooth Low Energy role the holder device plays during proximity presentation:
+The `bleTransferMode` property of `EudiWallet` controls the Bluetooth Low Energy role the holder device plays during proximity presentation.
+Set it in `EudiWalletConfiguration` at initialization time, or update it on the wallet instance before starting BLE presentation:
 
 | Mode | Description |
 |------|-------------|
@@ -560,6 +561,8 @@ let config = EudiWalletConfiguration(
     trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
     bleTransferMode: .server  // default
 )
+let wallet = try! EudiWallet(eudiWalletConfig: config)
+wallet.bleTransferMode = .client
 ```
 
 ```swift

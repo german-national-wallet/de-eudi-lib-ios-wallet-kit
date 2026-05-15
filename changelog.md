@@ -1,8 +1,22 @@
+## v0.29.4
+### Credential Display Images Downloaded at Issuance Time
+- Credential background images (`backgroundImageURL`) and logo images referenced in display metadata are downloaded and stored as inline data URIs.
+- This prevents the issuer from observing when a user opens their wallet or views a credential (privacy improvement) and eliminates any network latency at viewing time. If an image download fails, the original URL is preserved.
+
+## v0.29.3
+- Fixes display of portrait image in SD-JWT when it is base64-data-url
+
+## v0.29.2
+- Enhance token refresh handling in authorization and document issuance
+
+## v0.29.1
+The `bleTransferMode` property on ``EudiWallet`` controls the Bluetooth Low Energy (BLE) role used during proximity (ISO 18013-5) presentation. It can be set through ``EudiWalletConfiguration/bleTransferMode`` during initialization
+
 ## v0.29.0
 
 ### BLE Transfer Mode
 
-The `bleTransferMode` parameter of ``EudiWalletConfiguration`` controls the Bluetooth Low Energy (BLE) role used during proximity (ISO 18013-5) presentation:
+You can specify ``EudiWalletConfiguration/bleTransferMode`` during initialization:
 
 - **`.server`** (default): The holder device acts as a GATT peripheral (server), advertising and waiting for the reader to connect.
 - **`.client`**: The holder device acts as a GATT central (client), scanning and connecting to the reader's peripheral.

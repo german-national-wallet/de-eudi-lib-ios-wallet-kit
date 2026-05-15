@@ -12,7 +12,8 @@ ShareView(presentationSession: session)
 
 ## BLE Transfer Mode
 
-For proximity presentation over BLE, the ``EudiWalletConfiguration/bleTransferMode`` property controls the role the holder device plays during BLE data transfer:
+For proximity presentation over BLE, the ``EudiWallet/bleTransferMode`` property controls the role the holder device plays during BLE data transfer.
+Set it through ``EudiWalletConfiguration/bleTransferMode`` during initialization, or change it on the wallet instance before starting a BLE presentation:
 
 - **`.server`** (default): The holder device acts as a GATT peripheral (server). It advertises and waits for the reader to connect.
 - **`.client`**: The holder device acts as a GATT central (client). It scans and connects to the reader's peripheral.
@@ -24,6 +25,7 @@ let config = EudiWalletConfiguration(
     bleTransferMode: .server  // default
 )
 let wallet = try! EudiWallet(eudiWalletConfig: config)
+wallet.bleTransferMode = .both
 ```
 
 ```swift

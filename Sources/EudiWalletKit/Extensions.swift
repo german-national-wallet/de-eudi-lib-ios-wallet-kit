@@ -218,6 +218,48 @@ extension DocMetadata {
 		guard let claims else { return (nil, nil, nil, nil, nil, nil) }
 		return (getDisplayName(uiCulture), display, issuerDisplay, credentialIssuerIdentifier: credentialIssuerIdentifier, configurationIdentifier: configurationIdentifier,  claims)
 	}
+
+	/// Downloads all remote images referenced in the credential `display` metadata and replaces their
+	/// URLs with inline `data:` URIs. This prevents issuers from learning when a user views a credential
+	/// (privacy) and eliminates network latency at display time. URLs that cannot be fetched are left unchanged.
+	func downloadingDisplayImages() async -> DocMetadata {
+		guard let display, display.contains(where: { $0.backgroundImageURL != nil || $0.logo?.urlString != nil }) else { return self }
+		let downloadedDisplay = await withTaskGroup(of: DisplayMetadata.self) { group in
+			for dm in display { group.addTask { await dm.downloadingImages() } }
+			var result: [DisplayMetadata] = []
+			for await dm in group { result.append(dm) }
+			return result
+		}
+		return DocMetadata(credentialIssuerIdentifier: credentialIssuerIdentifier, configurationIdentifier: configurationIdentifier, docType: docType, display: downloadedDisplay, issuerDisplay: issuerDisplay, claims: claims, authorizedRequestData: authorizedRequestData, keyOptions: keyOptions, credentialOptions: credentialOptions, dpopKeyId: dpopKeyId)
+	}
+}
+
+extension DisplayMetadata {
+	/// Returns a copy of this `DisplayMetadata` with any http(s) image URLs replaced by inline `data:` URIs.
+	func downloadingImages() async -> DisplayMetadata {
+		async let newBgURL = Self.fetchAsDataURI(urlString: backgroundImageURL)
+		async let newLogoURL = Self.fetchAsDataURI(urlString: logo?.urlString)
+		let (fetchedBg, fetchedLogo) = await (newBgURL, newLogoURL)
+		let newLogo = logo.map { LogoMetadata(urlString: fetchedLogo ?? $0.urlString, alternativeText: $0.alternativeText) }
+		return DisplayMetadata(name: name, localeIdentifier: localeIdentifier, logo: newLogo, description: description, backgroundColor: backgroundColor, textColor: textColor, backgroundImageURL: fetchedBg ?? backgroundImageURL)
+	}
+
+	/// Downloads data from `urlString` (http/https only) and encodes it as a `data:` URI.
+	/// Returns `nil` if the URL is already a data URI, is `nil`, is non-http, or the download fails.
+	private static func fetchAsDataURI(urlString: String?) async -> String? {
+		guard let urlString else { return nil }
+		// Already a data URI – nothing to do
+		if urlString.lowercased().hasPrefix("data:") { return nil }
+		guard let url = URL(string: urlString), url.scheme == "https" || url.scheme == "http" else { return nil }
+		do {
+			let (data, response) = try await URLSession.shared.data(from: url)
+			let mimeType = (response as? HTTPURLResponse)?.mimeType ?? "application/octet-stream"
+			return "data:\(mimeType);base64,\(data.base64EncodedString())"
+		} catch {
+			logger.warning("Failed to download display image from \(urlString): \(error.localizedDescription)")
+			return nil
+		}
+	}
 }
 
 extension DocKeyInfo {
@@ -251,7 +293,7 @@ extension JSON {
 			}
 			return (.integer(UInt64(intValue)), stringValue)
 		case .string:
-			if isBase64ByteClaim(name: name, valueType: valueType), let d = decodeBase64ByteClaim(stringValue) {
+			if isBase64ByteClaim(name: name, value: stringValue, valueType: valueType), let d = decodeBase64ByteClaim(stringValue) {
 				return (.bytes(d.bytes), "\(d.count) bytes")
 			}
 			if name == "sex", let isex = Int(stringValue), isex >= 0, isex <= 2 {
@@ -267,14 +309,15 @@ extension JSON {
 		}
 	}
 
-	private func isBase64ByteClaim(name: String, valueType: String?) -> Bool {
+	private func isBase64ByteClaim(name: String, value: String, valueType: String?) -> Bool {
 		if let valueType {
 			let normalized = valueType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 			if ["jpeg", "jpg", "image/jpeg", "png", "image/png"].contains(normalized) {
 				return true
 			}
 		}
-		return name == "portrait" || name == "signature_usual_mark"
+		let (isValid, _) = isValidDataUrlAndGetCommaIndex(from: value)
+		return isValid || name == "portrait" || name == "signature_usual_mark"
 	}
 
 	private func decodeBase64ByteClaim(_ value: String) -> Data? {
@@ -284,12 +327,19 @@ extension JSON {
 		return Data(base64urlEncoded: value) ?? Data(base64Encoded: value)
 	}
 
-	private func dataUrlBase64Payload(from value: String) -> String? {
+	private func isValidDataUrlAndGetCommaIndex(from value: String) -> (isValid: Bool, commaIndex: String.Index?) {
 		let prefix = String(value.prefix(5))
-		guard prefix.caseInsensitiveCompare("data:") == .orderedSame, let commaIndex = value.firstIndex(of: ",") else { return nil }
+		guard prefix.caseInsensitiveCompare("data:") == .orderedSame else { return (false, nil) }
+		guard let commaIndex = value.firstIndex(of: ",") else { return (false, nil) }
 		let metadataStartIndex = value.index(value.startIndex, offsetBy: 5)
 		let metadata = value[metadataStartIndex..<commaIndex].lowercased()
-		guard metadata.split(separator: ";").contains("base64") else { return nil }
+		guard metadata.split(separator: ";").contains("base64") else { return (false, nil) }
+		return (true, commaIndex)
+	}
+
+	private func dataUrlBase64Payload(from value: String) -> String? {
+		let (isValid, commaIndex) = isValidDataUrlAndGetCommaIndex(from: value)
+		guard isValid, let commaIndex = commaIndex else { return nil }
 		return String(value[value.index(after: commaIndex)...])
 	}
 
