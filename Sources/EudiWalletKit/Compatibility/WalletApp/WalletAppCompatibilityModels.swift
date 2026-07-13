@@ -8,6 +8,10 @@ import JOSESwift
 import OpenID4VCI
 import Security
 
+public protocol WalletAttestationsProviderForWalletAppCompatibility: WalletAttestationsProvider {
+	func getKeysAttestation(docType: String) async throws -> String?
+}
+
 public struct IssuerDPoPConstructorParam: @unchecked Sendable {
 	public let clientID: String?
 	public let expirationDuration: TimeInterval?
