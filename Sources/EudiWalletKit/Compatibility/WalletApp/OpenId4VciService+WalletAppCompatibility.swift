@@ -338,7 +338,7 @@ extension OpenId4VciService {
 				keyOptions: dpopKeyOptions ?? config.dpopKeyOptions
 			)
 		}
-		let vciConfig = try await config.toOpenId4VCIConfigWithPrivateKey(
+		let vciConfig = try await config.toOpenId4VCIConfig(
 			credentialIssuerId: offer.credentialIssuerIdentifier.url.absoluteString,
 			clientAttestationPopSigningAlgValuesSupported: offer.authorizationServerMetadata.clientAttestationPopSigningAlgValuesSupported
 		)
