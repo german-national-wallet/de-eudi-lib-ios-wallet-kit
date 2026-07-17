@@ -49,7 +49,8 @@ class TransactionLogUtils {
 		if transactionLog.dataFormat == .cbor {
 			guard let dr = try? DeviceResponse(data: raw.bytes) else { return [] }
 			for (index, doc) in (dr.documents ?? []).enumerated() {
-				let docMetadata = transactionLog.docMetadata?[index]
+				let metadata = transactionLog.docMetadata
+				let docMetadata = metadata?.indices.contains(index) == true ? metadata?[index] : nil
 				if let docDecodable = parseCBORDocClaimsDecodable(id: UUID().uuidString, docType: doc.docType, issuerSigned: doc.issuerSigned, metadata: docMetadata, uiCulture: uiCulture) {
 					res.append(docDecodable)
 				}
@@ -60,9 +61,11 @@ class TransactionLogUtils {
 				let vpResponse = try decoder.decode(VpResponsePayload.self, from: raw)
 				if let df = vpResponse.data_formats {
 					for m in df.enumerated() {
+						guard vpResponse.verifiable_presentations.indices.contains(m.offset) else { continue }
 						let presentedStr = vpResponse.verifiable_presentations[m.offset]
-						let metadata = transactionLog.docMetadata?[m.offset]
-						if let dcc = parseDocClaimDecodable(presentedStr, dataFormat: m.element, metadata: metadata, uiCulture: uiCulture) {  res.append(dcc) }
+						let allMetadata = transactionLog.docMetadata
+						let metadata = allMetadata?.indices.contains(m.offset) == true ? allMetadata?[m.offset] : nil
+						if let dcc = parseDocClaimDecodable(presentedStr, dataFormat: m.element, metadata: metadata, uiCulture: uiCulture) { res.append(dcc) }
 					}
 				}
 			} catch {

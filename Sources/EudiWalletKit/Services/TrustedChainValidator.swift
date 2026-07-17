@@ -43,7 +43,7 @@ public struct TrustedChainValidator: CertificateChainTrust {
             return false
         }
 		(isValid, _, _) = SecurityHelpers
-			.isMdocX5cValid(secCerts: certsDer, usage: .mdocReaderAuth, revocationPolicy: crlRevocationPolicy, rootIaca: iacaRoots)
+			.isMdocX5cValid(secCerts: certsDer, usage: .mdocAuth, revocationPolicy: crlRevocationPolicy, rootIaca: iacaRoots)
         return isValid
     }
 }

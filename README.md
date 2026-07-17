@@ -111,7 +111,7 @@ The wallet developer can customize cryptographic key operations by passing `Secu
 // Basic initialization with EudiWalletConfiguration
 let config = EudiWalletConfiguration(
     serviceName: "my_wallet_app",
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
+    trustedReaderRootCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
 )
 let wallet = try! EudiWallet(eudiWalletConfig: config)
 
@@ -119,10 +119,9 @@ let wallet = try! EudiWallet(eudiWalletConfig: config)
 let config = EudiWalletConfiguration(
     serviceName: "my_wallet_app",
     userAuthenticationRequired: true,
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
+    trustedReaderRootCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
     deviceAuthMethod: .deviceSignature,
     uiCulture: "en",
-    logFileName: "wallet.log",
     bleTransferMode: .server,  // .server (default), .client, or .both
     crlRevocationPolicy: .hardFail // default
 )
@@ -136,6 +135,16 @@ let wallet = try! EudiWallet(
     openID4VpConfig: openId4VpConfig
 )
 ```
+
+The library does not bootstrap SwiftLog because its configuration is process-global.
+Configure SwiftLog once in the host application before creating wallet instances;
+`FileLogging` can be used when a file-backed handler is desired.
+
+Custom networking passed to `EudiWallet` must conform to
+`BoundedNetworkingProtocol`. Its
+`data(for:maximumResponseBytes:)` implementation must stop reading as soon as
+the limit is exceeded; checking the size only after downloading the response is
+not sufficient.
 
 Set `allowPresentingPartialClaims` to `true` when you want OpenID4VP DCQL resolution to skip claims that are missing from an otherwise matching credential. The default value is `false`, which keeps all requested claims mandatory.
 
@@ -166,7 +175,7 @@ let issuerConfigurations: [String: OpenId4VciConfiguration] = [
 ]
 
 let config = EudiWalletConfiguration(
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
+    trustedReaderRootCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
 )
 let wallet = try! EudiWallet(
     eudiWalletConfig: config,
@@ -180,6 +189,16 @@ try wallet.registerOpenId4VciServices([
 ```
 
 The `requireDpop` property controls whether issuance should halt when DPoP is not available. The `issuerMetadataPolicy` property controls signed metadata handling per issuer (`.ignoreSigned` or `.requireSigned`). The `dpopKeyOptions` property allows you to specify key generation parameters for DPoP keys, including the secure area, curve type and user authentication options.
+
+Issued SD-JWT credentials are signature-verified and must bind every generated
+holder key. When an SD-JWT contains an `x5c` header, configure
+`trustedIssuerCertificates` with issuer trust roots. Certificate revocation uses
+`issuerCertificateRevocationPolicy` (`.hardFail` by default), and
+`issuerCertificateIdentityValidation` defaults to `.required`, which requires a
+matching URI subject alternative name or, for issuer URLs without a path, a
+matching DNS subject alternative name. Use `.whenPresent` only for a legacy
+issuer profile that intentionally omits both identity names; its certificate
+chain is still validated against the configured issuer roots.
 
 ### OAuth 2.0 Attestation-Based Client Authentication
 
@@ -209,7 +228,7 @@ struct MyAttestationProvider: WalletAttestationsProvider {
 let config = OpenId4VciConfiguration(
     credentialIssuerURL: "https://issuer.example.com",
     clientId: "my-wallet-app",
-    keyAttestationsConfig: KeyAttestationConfig(
+    keyAttestationsConfig: KeyAttestationConfiguration(
         walletAttestationsProvider: MyAttestationProvider(),
         popKeyOptions: KeyOptions(
             secureAreaName: "SecureEnclave",
@@ -223,7 +242,7 @@ let config = OpenId4VciConfiguration(
 )
 
 let walletConfig = EudiWalletConfiguration(
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
+    trustedReaderRootCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
 )
 let wallet = try! EudiWallet(
     eudiWalletConfig: walletConfig,
@@ -231,7 +250,7 @@ let wallet = try! EudiWallet(
 )
 ```
 
-The `KeyAttestationConfig` structure accepts the following parameters:
+The `KeyAttestationConfiguration` structure accepts the following parameters:
 
 - `walletAttestationsProvider`: Provider implementation for obtaining wallet and key attestations
 - `popKeyOptions`: Optional key generation parameters for the Proof-of-Possession key
@@ -465,7 +484,10 @@ When you need strict validation of issuer metadata signatures using certificate 
 
 ```swift
 // Create a certificate chain trust validator with IACA root certificates
-let trust: CertificateChainTrust = TrustedChainValidator(iacaRoots: [eudic])
+let trust: CertificateChainTrust = TrustedChainValidator(
+  iacaRoots: [eudic],
+  crlRevocationPolicy: .hardFail
+)
 
 // Create an issuer metadata policy that requires signed metadata
 let issuerMetadataPolicy: IssuerMetadataPolicy = .requireSigned(
@@ -481,7 +503,7 @@ let config = OpenId4VciConfiguration(
 
 // Use this configuration when initializing the wallet
 let walletConfig = EudiWalletConfiguration(
-  trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
+  trustedReaderRootCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
 )
 let wallet = try EudiWallet(
   eudiWalletConfig: walletConfig,
@@ -565,7 +587,7 @@ Set it in `EudiWalletConfiguration` at initialization time, or update it on the 
 ```swift
 // Configure BLE transfer mode
 let config = EudiWalletConfiguration(
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
+    trustedReaderRootCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
     bleTransferMode: .server  // default
 )
 let wallet = try! EudiWallet(eudiWalletConfig: config)

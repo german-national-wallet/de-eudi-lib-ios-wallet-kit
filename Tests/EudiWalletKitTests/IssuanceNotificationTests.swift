@@ -33,7 +33,15 @@ struct IssuanceNotificationTests {
 	) throws -> OpenId4VciService {
 		let networking = TestNetworking(metadata: try makeSdJwtIssuerMetadata(forResource: "sjwt-pid-python", issuerURL: issuerURL))
 		let storage = StorageManager(storageService: storageService)
-		let config = OpenId4VciConfiguration(credentialIssuerURL: issuerURL, parUsage: .required(authorizationCodeDPoPBinding: true), requireDpop: true)
+		let trustedRootData = try #require(Data(name: "pidissuerca02_ut", ext: "der", from: Bundle.module))
+		let trustedRoot = try #require(SecCertificateCreateWithData(nil, trustedRootData as CFData))
+		let config = OpenId4VciConfiguration(
+			credentialIssuerURL: issuerURL,
+			parUsage: .required(authorizationCodeDPoPBinding: true),
+			requireDpop: true,
+			trustedIssuerCertificates: [[trustedRoot]],
+			issuerCertificateIdentityValidation: .whenPresent
+		)
 		return try OpenId4VciService(uiCulture: nil, config: config, networking: networking, storage: storage, storageService: storageService)
 	}
 
@@ -224,6 +232,23 @@ struct IssuanceNotificationTests {
 		#expect(document.id == issueReq.id)
 		#expect(await spy.notifyCallCount == 1)
 	}
+
+	@Test("a committed replacement remains successful when old credential deletion fails")
+	func testReplacementCommitSurvivesCleanupFailure() async throws {
+		let storageService = DeleteFailingStorageService(failingDocumentId: "old-document")
+		let service = try makeVciService(storageService: storageService)
+		let (outcome, issueReq) = try makeIssuanceOutcome(notificationId: nil)
+
+		let document = try await service.finalizeIssuing(
+			issueOutcome: outcome,
+			docType: "urn:eu:europa:ec:eudi:pid:1",
+			format: .sdjwt,
+			issueReq: issueReq,
+			deleteId: "old-document"
+		)
+
+		#expect(await storageService.contains(documentId: document.id))
+	}
 }
 
 actor NotificationSignal {
@@ -279,5 +304,48 @@ actor FailingStorageService: DataStorageService {
 	func saveDocument(_ document: WalletStorage.Document, batch: [WalletStorage.Document]?, allowOverwrite: Bool) async throws { throw saveError }
 	func deleteDocument(id: String, status: WalletStorage.DocumentStatus) async throws {}
 	func deleteDocuments(status: WalletStorage.DocumentStatus) async throws {}
+	func deleteDocumentCredential(id: String, index: Int) async throws {}
+}
+
+actor DeleteFailingStorageService: DataStorageService {
+	private let failingDocumentId: String
+	private var documents: [String: WalletStorage.Document] = [:]
+
+	init(failingDocumentId: String) {
+		self.failingDocumentId = failingDocumentId
+	}
+
+	func contains(documentId: String) -> Bool {
+		documents[documentId] != nil
+	}
+
+	func loadDocument(id: String, status: WalletStorage.DocumentStatus) async throws -> WalletStorage.Document? {
+		documents[id].flatMap { $0.status == status ? $0 : nil }
+	}
+
+	func loadDocumentMetadata(id: String, status: WalletStorage.DocumentStatus) async throws -> DocMetadata? {
+		guard let data = documents[id]?.metadata else { return nil }
+		return try? JSONDecoder().decode(DocMetadata.self, from: data)
+	}
+
+	func loadDocuments(status: WalletStorage.DocumentStatus) async throws -> [WalletStorage.Document]? {
+		documents.values.filter { $0.status == status }
+	}
+
+	func saveDocument(_ document: WalletStorage.Document, batch: [WalletStorage.Document]?, allowOverwrite: Bool) async throws {
+		documents[document.id] = document
+	}
+
+	func deleteDocument(id: String, status: WalletStorage.DocumentStatus) async throws {
+		if id == failingDocumentId {
+			throw NSError(domain: "TestStorage", code: 2, userInfo: [NSLocalizedDescriptionKey: "delete failed"])
+		}
+		documents.removeValue(forKey: id)
+	}
+
+	func deleteDocuments(status: WalletStorage.DocumentStatus) async throws {
+		documents = documents.filter { $0.value.status != status }
+	}
+
 	func deleteDocumentCredential(id: String, index: Int) async throws {}
 }

@@ -79,8 +79,9 @@ extension Display {
 
 extension Bundle {
 	func getURLSchemas() -> [String]? {
-		guard let urlTypes = Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String:Any]], let schema = urlTypes.first, let urlSchemas = schema["CFBundleURLSchemes"] as? [String] else {return nil}
-		return urlSchemas
+		guard let urlTypes = object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] else { return nil }
+		let schemes = urlTypes.flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] }
+		return schemes.isEmpty ? nil : schemes
 	}
 }
 
@@ -173,8 +174,9 @@ extension MdocDataModel18013.SignUpResponse {
 			let drData = Data(CBOR.encode(sr0.dr.toCBOR(options: CBOROptions())))
 			let issData = Data(CBOR.encode(sr0.iss.toCBOR(options: CBOROptions())))
 			var jsonObj = ["response": drData.base64EncodedString()]
-			guard let jsonData = try? JSONSerialization.data(withJSONObject: jsonObj), let pk = sr.privateKey, let pkData = Data(base64Encoded: pk) else { return nil }
+			guard let pk = sr.privateKey, let pkData = Data(base64Encoded: pk) else { return nil }
 			jsonObj["privateKey"] = pk
+			guard let jsonData = try? JSONSerialization.data(withJSONObject: jsonObj) else { return nil }
 			return (docType: sr0.docType, jsonData: jsonData, drData: drData, issData: issData, pkData: pkData)
 		}
 	}
@@ -244,6 +246,23 @@ extension CredentialConfiguration {
 }
 
 extension DocMetadata {
+	/// Returns metadata safe to hand to transaction-log implementations.
+	/// OAuth access and refresh tokens are intentionally excluded.
+	func redactedForTransactionLog() -> DocMetadata {
+		DocMetadata(
+			credentialIssuerIdentifier: credentialIssuerIdentifier,
+			configurationIdentifier: configurationIdentifier,
+			docType: docType,
+			display: display,
+			issuerDisplay: issuerDisplay,
+			claims: claims,
+			authorizedRequestData: nil,
+			keyOptions: keyOptions,
+			credentialOptions: credentialOptions,
+			dpopKeyId: dpopKeyId
+		)
+	}
+
 	func getMetadata(uiCulture: String?) -> (displayName: String?, display: [DisplayMetadata]?, issuerDisplay: [DisplayMetadata]?, credentialIssuerIdentifier: String?, configurationIdentifier: String?, claimMetadata: [DocClaimMetadata]?) {
 		guard let claims else { return (nil, nil, nil, nil, nil, nil) }
 		return (getDisplayName(uiCulture), display, issuerDisplay, credentialIssuerIdentifier: credentialIssuerIdentifier, configurationIdentifier: configurationIdentifier,  claims)
@@ -252,13 +271,21 @@ extension DocMetadata {
 	/// Downloads all remote images referenced in the credential `display` metadata and replaces their
 	/// URLs with inline `data:` URIs. This prevents issuers from learning when a user views a credential
 	/// (privacy) and eliminates network latency at display time. URLs that cannot be fetched are left unchanged.
-	func downloadingDisplayImages() async -> DocMetadata {
+	func downloadingDisplayImages(
+		fetch: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)
+	) async -> DocMetadata {
 		guard let display, display.contains(where: { $0.backgroundImageURL != nil || $0.logo?.urlString != nil }) else { return self }
-		let downloadedDisplay = await withTaskGroup(of: DisplayMetadata.self) { group in
-			for dm in display { group.addTask { await dm.downloadingImages() } }
-			var result: [DisplayMetadata] = []
-			for await dm in group { result.append(dm) }
-			return result
+		// Issuer metadata is untrusted. Bound work and keep peak memory small by
+		// processing a conservative number of display variants sequentially.
+		let maximumDownloadedDisplayVariants = 32
+		var downloadedDisplay = [DisplayMetadata]()
+		downloadedDisplay.reserveCapacity(display.count)
+		for (index, metadata) in display.enumerated() {
+			if index < maximumDownloadedDisplayVariants {
+				downloadedDisplay.append(await metadata.downloadingImages(fetch: fetch))
+			} else {
+				downloadedDisplay.append(metadata)
+			}
 		}
 		return DocMetadata(credentialIssuerIdentifier: credentialIssuerIdentifier, configurationIdentifier: configurationIdentifier, docType: docType, display: downloadedDisplay, issuerDisplay: issuerDisplay, claims: claims, authorizedRequestData: authorizedRequestData, keyOptions: keyOptions, credentialOptions: credentialOptions, dpopKeyId: dpopKeyId)
 	}
@@ -266,28 +293,40 @@ extension DocMetadata {
 
 extension DisplayMetadata {
 	/// Returns a copy of this `DisplayMetadata` with any http(s) image URLs replaced by inline `data:` URIs.
-	func downloadingImages() async -> DisplayMetadata {
-		async let newBgURL = Self.fetchAsDataURI(urlString: backgroundImageURL)
-		async let newLogoURL = Self.fetchAsDataURI(urlString: logo?.urlString)
+	func downloadingImages(
+		fetch: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)
+	) async -> DisplayMetadata {
+		async let newBgURL = Self.fetchAsDataURI(urlString: backgroundImageURL, fetch: fetch)
+		async let newLogoURL = Self.fetchAsDataURI(urlString: logo?.urlString, fetch: fetch)
 		let (fetchedBg, fetchedLogo) = await (newBgURL, newLogoURL)
 		let newLogo = logo.map { LogoMetadata(urlString: fetchedLogo ?? $0.urlString, alternativeText: $0.alternativeText) }
 		let resolvedBackgroundImageURL = fetchedBg ?? backgroundImageURL
 		return DisplayMetadata(name: name, localeIdentifier: localeIdentifier, logo: newLogo, description: description, backgroundColor: backgroundColor, textColor: textColor, backgroundImageURL: resolvedBackgroundImageURL)
 	}
 
-	/// Downloads data from `urlString` (http/https only) and encodes it as a `data:` URI.
-	/// Returns `nil` if the URL is already a data URI, is `nil`, is non-http, or the download fails.
-	private static func fetchAsDataURI(urlString: String?) async -> String? {
+	/// Downloads a small HTTPS image and encodes it as a `data:` URI.
+	private static func fetchAsDataURI(
+		urlString: String?,
+		fetch: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)
+	) async -> String? {
 		guard let urlString else { return nil }
-		// Already a data URI – nothing to do
 		if urlString.lowercased().hasPrefix("data:") { return nil }
-		guard let url = URL(string: urlString), url.scheme == "https" || url.scheme == "http" else { return nil }
+		guard let url = URL(string: urlString) else { return nil }
 		do {
-			let (data, response) = try await URLSession.shared.data(from: url)
-			let mimeType = (response as? HTTPURLResponse)?.mimeType ?? "application/octet-stream"
+			try EudiWallet.validateHTTPSRemoteURL(url, purpose: "Credential display image")
+			let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+			let (data, response) = try await fetch(request)
+			guard let http = response as? HTTPURLResponse,
+				(200..<300).contains(http.statusCode),
+				let finalURL = http.url else { return nil }
+			try EudiWallet.validateHTTPSRemoteURL(finalURL, purpose: "Credential display image response")
+			if http.expectedContentLength > 2 * 1_024 * 1_024 { return nil }
+			let allowedMIMETypes = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/heic", "image/heif"]
+			guard let mimeType = http.mimeType?.lowercased(), allowedMIMETypes.contains(mimeType) else { return nil }
+			guard data.count <= 2 * 1_024 * 1_024 else { return nil }
 			return "data:\(mimeType);base64,\(data.base64EncodedString())"
 		} catch {
-			logger.warning("Failed to download display image from \(urlString): \(error.localizedDescription)")
+			logger.warning("Failed to download credential display image: \(error.localizedDescription)")
 			return nil
 		}
 	}
@@ -322,7 +361,13 @@ extension JSON {
 				let isoDateStr = ISO8601DateFormatter().string(from: date)
 				return (.date(isoDateStr), date.formatted(date: .complete, time: .omitted))
 			}
-			return (.integer(UInt64(intValue)), stringValue)
+			if let unsignedInteger = UInt64(stringValue) {
+				return (.integer(unsignedInteger), stringValue)
+			}
+			if let number = Double(stringValue), number.isFinite {
+				return (.double(number), stringValue)
+			}
+			return nil
 		case .string:
 			if isBase64ByteClaim(name: name, value: stringValue, valueType: valueType), let d = decodeBase64ByteClaim(stringValue) {
 				return (.bytes(d.bytes), "\(d.count) bytes")
@@ -450,7 +495,7 @@ extension CoseEcCurve {
 		switch crvName {
 		case "P-256": self = .P256
 		case "P-384": self = .P384
-		case "P-512": self = .P521
+		case "P-521", "P-512": self = .P521
 		default: return nil
 		}
 	}
@@ -597,7 +642,7 @@ extension EudiWallet {
 	/// Try to resolve a pre-registered VCI service directly from credential offer URL parameters.
 	func resolveVCIServiceFromOfferUri(_ offerUri: String) async -> OpenId4VciService? {
 		guard let issuerURL = Self.extractCredentialIssuerURL(from: offerUri) else { return nil }
-		return await OpenId4VCIServiceRegistry.shared.getByIssuerURL(issuerURL: issuerURL)
+		return try? await resolveVCIService(issuerName: issuerURL)
 	}
 
 	/// Extract credential issuer URL from an OpenID4VCI offer URL.

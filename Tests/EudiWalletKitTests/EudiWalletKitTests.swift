@@ -29,6 +29,7 @@ import OpenID4VCI
 import OpenID4VP
 import OpenID4VCI
 import X509
+import Security
 import enum OpenID4VP.ClaimPathElement
 import struct OpenID4VP.ClaimPath
 import protocol OpenID4VCI.Networking
@@ -427,7 +428,15 @@ struct EudiWalletKitTests {
 	private func makeVciService(storageService: TestDataStorageService, issuerURL: String = "https://dev.issuer.eudiw.dev") throws -> OpenId4VciService {
 		let networking = TestNetworking(metadata: try makeSdJwtIssuerMetadata(forResource: "sjwt-pid-python", issuerURL: issuerURL))
 		let storage = StorageManager(storageService: storageService)
-		let config = OpenId4VciConfiguration(credentialIssuerURL: issuerURL, parUsage: .required(authorizationCodeDPoPBinding: true), requireDpop: true)
+		let trustedRootData = try #require(Data(name: "pidissuerca02_ut", ext: "der", from: Bundle.module))
+		let trustedRoot = try #require(SecCertificateCreateWithData(nil, trustedRootData as CFData))
+		let config = OpenId4VciConfiguration(
+			credentialIssuerURL: issuerURL,
+			parUsage: .required(authorizationCodeDPoPBinding: true),
+			requireDpop: true,
+			trustedIssuerCertificates: [[trustedRoot]],
+			issuerCertificateIdentityValidation: .whenPresent
+		)
 		return try OpenId4VciService(uiCulture: nil, config: config, networking: networking, storage: storage, storageService: storageService)
 	}
 
@@ -579,7 +588,7 @@ final class RecordingWalletAttestationsProvider: WalletAttestationsProvider, @un
 	}
 }
 
-final class TestNetworking: Networking {
+final class TestNetworking: Networking, BoundedNetworkingProtocol {
 	private let metadata: Data
 
 	init(metadata: Data) {
@@ -593,6 +602,13 @@ final class TestNetworking: Networking {
 
 	func data(for request: URLRequest) async throws -> (Data, URLResponse) {
 		try await data(from: request.url ?? URL(string: "https://example.com")!)
+	}
+
+	func data(for request: URLRequest, maximumResponseBytes: Int) async throws -> (Data, URLResponse) {
+		guard maximumResponseBytes >= 0, metadata.count <= maximumResponseBytes else {
+			throw WalletError(description: "Network response exceeds the configured size limit")
+		}
+		return try await data(for: request)
 	}
 }
 

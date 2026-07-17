@@ -53,4 +53,34 @@ public protocol NetworkingProtocol: Sendable {
 	func data(for request: URLRequest) async throws -> (Data, URLResponse)
 }
 
-extension URLSession: NetworkingProtocol {}
+/// Networking capable of enforcing a response limit while bytes are streamed.
+/// Custom wallet networking should adopt this protocol to handle untrusted
+/// OpenID metadata, request objects, status lists, and credential images.
+public protocol BoundedNetworkingProtocol: NetworkingProtocol {
+	/// Fetch a response while enforcing the byte limit during transfer. Conformers
+	/// must stop reading as soon as the limit would be exceeded; a post-download
+	/// size check is not sufficient for untrusted protocol responses.
+	func data(for request: URLRequest, maximumResponseBytes: Int) async throws -> (Data, URLResponse)
+}
+
+extension URLSession: NetworkingProtocol, BoundedNetworkingProtocol {
+	public func data(for request: URLRequest, maximumResponseBytes: Int) async throws -> (Data, URLResponse) {
+		guard maximumResponseBytes >= 0 else {
+			throw WalletError(description: "Maximum response size cannot be negative")
+		}
+		let (bytes, response) = try await bytes(for: request)
+		let expectedLength = response.expectedContentLength
+		if expectedLength > Int64(maximumResponseBytes) {
+			throw WalletError(description: "Network response exceeds the configured size limit")
+		}
+		var data = Data()
+		data.reserveCapacity(min(maximumResponseBytes, max(0, Int(expectedLength))))
+		for try await byte in bytes {
+			guard data.count < maximumResponseBytes else {
+				throw WalletError(description: "Network response exceeds the configured size limit")
+			}
+			data.append(byte)
+		}
+		return (data, response)
+	}
+}

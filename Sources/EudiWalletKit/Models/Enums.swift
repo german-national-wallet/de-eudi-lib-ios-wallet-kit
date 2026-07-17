@@ -20,6 +20,10 @@ import OpenID4VCI
 enum AsWebOutcome: @unchecked Sendable {
 	case code(String, state: String?)
 	case presentation_request(URL)
+
+	var isAuthorizationCode: Bool {
+		if case .code = self { true } else { false }
+	}
 }
 
 enum AuthorizeRequestOutcome: @unchecked Sendable {

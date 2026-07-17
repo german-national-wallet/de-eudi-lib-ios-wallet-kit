@@ -33,8 +33,12 @@ public struct EudiWalletConfiguration: Sendable {
 	public let deviceAuthMethod: DeviceAuthMethod
 	/// preferred UI culture for localization of display names. It must be a 2-letter language code. If not set, the system locale is used
 	public let uiCulture: String?
-	/// If not-nil, logging to the specified log file name will be configured
-	public let logFileName: String?
+	/// Optional legacy log filename. The value is validated as a cache-directory basename,
+	/// but the library does not install a process-global SwiftLog handler.
+	/// - Deprecated: Configure SwiftLog once in the host application instead.
+	@available(*, deprecated, message: "Configure SwiftLog once in the host application instead")
+	public var logFileName: String? { legacyLogFileName }
+	let legacyLogFileName: String?
 	/// BLE transfer mode for proximity presentation. Controls the role the device plays during BLE data transfer.
 	/// - `.server` (default): The holder device acts as a GATT peripheral (server), advertising and waiting for the reader to connect.
 	/// - `.client`: The holder device acts as a GATT central (client), scanning and connecting to the reader's peripheral.
@@ -62,7 +66,7 @@ public struct EudiWalletConfiguration: Sendable {
 		self.trustedReaderRootCertificates = trustedReaderRootCertificates
 		self.deviceAuthMethod = deviceAuthMethod
 		self.uiCulture = uiCulture
-		self.logFileName = logFileName
+		self.legacyLogFileName = logFileName
 		self.bleTransferMode = bleTransferMode
 		self.crlRevocationPolicy = crlRevocationPolicy
 	}

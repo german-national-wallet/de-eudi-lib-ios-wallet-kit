@@ -94,6 +94,13 @@ struct PendingIssuanceModel: Codable {
 	let pendingReason: PendingReason
 	let configuration: CredentialConfiguration
 	let metadataKey: String
+	/// A normalized by-value credential offer request. Unlike the resolved offer,
+	/// this is Codable and lets pending issuance survive a process restart while
+	/// issuer and authorization-server metadata are resolved again under the
+	/// service's current trust policy.
+	///
+	/// Optional to decode pending documents created by earlier library versions.
+	let offerRequestJSON: String?
 	let pckeCodeVerifier: String
 	let pckeCodeVerifierMethod: String
 	let state: String
@@ -127,13 +134,13 @@ extension IssuanceOutcome {
 	}
 
 	func getDataToSave(index: Int, format: DocDataFormat) -> Data {
-		guard case let .issued(dataPairs, _, _, _) = self, dataPairs.count > index else { return Data() }
+		guard case let .issued(dataPairs, _, _, _) = self, dataPairs.indices.contains(index) else { return Data() }
 		let (data, _) = dataPairs[index]
 		return data
 	}
 
 	func getPublicKey(index: Int) -> Data {
-		guard case let .issued(dataPairs, _, _, _) = self, dataPairs.count > index else { return Data() }
+		guard case let .issued(dataPairs, _, _, _) = self, dataPairs.indices.contains(index) else { return Data() }
 		let (_, pk) = dataPairs[index]
 		return pk
 	}

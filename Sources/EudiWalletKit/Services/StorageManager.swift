@@ -30,18 +30,18 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 	public static let knownDocTypes = [EuPidModel.euPidDocType, IsoMdlModel.isoDocType]
 	/// A published property that holds an array of decoded documents conforming to the `DocClaimsModel` protocol.
 	/// - Note: The `@Published` property wrapper is used to allow SwiftUI views to automatically update when the value changes.
-	@Published public private(set) var docModels: [DocClaimsModel] = []
+	@MainActor @Published public private(set) var docModels: [DocClaimsModel] = []
 	/// - Note: This property is used to store documents that are deferred for later processing.
-	@Published public private(set) var deferredDocuments: [WalletStorage.Document] = []
+	@MainActor @Published public private(set) var deferredDocuments: [WalletStorage.Document] = []
 	/// A published property that holds an array of pending documents.
-	@Published public private(set) var pendingDocuments: [WalletStorage.Document] = []
+	@MainActor @Published public private(set) var pendingDocuments: [WalletStorage.Document] = []
 	var storageService: any DataStorageService
 	/// Whether wallet currently has loaded data
-	@Published public private(set) var hasData: Bool = false
+	@MainActor @Published public private(set) var hasData: Bool = false
 	/// Count of documents loaded in the wallet
-	@Published public private(set) var docCount: Int = 0
+	@MainActor @Published public private(set) var docCount: Int = 0
 	/// Error object with localized message
-	@Published public var uiError: WalletError?
+	@MainActor @Published public var uiError: WalletError?
 	var modelFactory: (any DocClaimsDecodableFactory)?
 
 	public init(storageService: any DataStorageService, modelFactory: (any DocClaimsDecodableFactory)? = nil) {
@@ -51,7 +51,7 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 
 	func refreshPublishedVars() async {
 		await MainActor.run {
-			hasData = !docModels.isEmpty || !deferredDocuments.isEmpty
+			hasData = !docModels.isEmpty || !deferredDocuments.isEmpty || !pendingDocuments.isEmpty
 			docCount = docModels.count
 		}
 	}
@@ -66,7 +66,7 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 		case .issued:
 			let models = await docs.asyncCompactMap { d -> DocClaimsModel? in
 				let mdoc = Self.toClaimsModel(doc:d, uiCulture: uiCulture, modelFactory: modelFactory)
-				if let mdoc { mdoc.credentialsUsageCounts = try? await getCredentialsUsageCount(id: mdoc.id) }
+				if let mdoc { mdoc.credentialsUsageCounts = try? await Self.getCredentialsUsageCount(id: mdoc.id, secureAreaName: mdoc.secureAreaName) }
 				return mdoc
 			}
 			await MainActor.run { docModels = models }
@@ -78,11 +78,7 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 	}
 
 	private func refreshDocModel(_ doc: WalletStorage.Document, uiCulture: String?, docStatus: WalletStorage.DocumentStatus) async {
-		if docStatus == .issued && docModels.first(where: { $0.id == doc.id}) == nil ||
-			docStatus == .deferred && deferredDocuments.first(where: { $0.id == doc.id}) == nil ||
-			docStatus == .pending && pendingDocuments.first(where: { $0.id == doc.id}) == nil {
-			_ = await appendDocModel(doc, uiCulture: uiCulture)
-		}
+		_ = await appendDocModel(doc, uiCulture: uiCulture)
 	}
 
 	@discardableResult func appendDocModel(_ doc: WalletStorage.Document, uiCulture: String?) async -> DocClaimsModel? {
@@ -90,26 +86,49 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 		case .issued:
 			let mdoc: DocClaimsModel? = Self.toClaimsModel(doc: doc, uiCulture: uiCulture, modelFactory: modelFactory)
 			if let mdoc {
-				mdoc.credentialsUsageCounts = try? await getCredentialsUsageCount(id: doc.id)
-				await MainActor.run { docModels.append(mdoc) }
+				mdoc.credentialsUsageCounts = try? await Self.getCredentialsUsageCount(id: doc.id, secureAreaName: mdoc.secureAreaName)
+				await MainActor.run {
+					docModels.removeAll { $0.id == doc.id }
+					docModels.append(mdoc)
+				}
 			} else { logger.error("Could not decode claims of \(doc.docType)") }
 			return mdoc
 		case .deferred:
-			await MainActor.run { deferredDocuments.append(doc) }
+			await MainActor.run {
+				deferredDocuments.removeAll { $0.id == doc.id }
+				deferredDocuments.append(doc)
+			}
 			return nil
 		case .pending:
-			await MainActor.run { pendingDocuments.append(doc) }
+			await MainActor.run {
+				pendingDocuments.removeAll { $0.id == doc.id }
+				pendingDocuments.append(doc)
+			}
 			return nil
 		}
 	}
 
 	func removePendingOrDeferredDoc(id: String) async throws {
-		if let index = pendingDocuments.firstIndex(where: { $0.id == id }) {
-			_ = await MainActor.run { pendingDocuments.remove(at: index) }
+		for status in [DocumentStatus.pending, .deferred] {
+			try await removePlaceholder(id: id, status: status)
 		}
-		if deferredDocuments.firstIndex(where: { $0.id == id }) != nil {
-			try await deleteDocument(id: id, status: .deferred)
+	}
+
+	func removePlaceholder(id: String, status: DocumentStatus) async throws {
+		guard status == .pending || status == .deferred else {
+			throw WalletError(description: "Only pending or deferred placeholders can be removed")
 		}
+		if try await storageService.loadDocuments(status: status)?.contains(where: { $0.id == id }) == true {
+			try await storageService.deleteDocument(id: id, status: status)
+		}
+		await MainActor.run {
+			switch status {
+			case .pending: pendingDocuments.removeAll { $0.id == id }
+			case .deferred: deferredDocuments.removeAll { $0.id == id }
+			case .issued: break
+			}
+		}
+		await refreshPublishedVars()
 	}
 
 	/// Set usage count for a document (for caching/logging purposes)
@@ -206,7 +225,8 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 
 	public func getDocIdsToPresentInfo(documents: [WalletStorage.Document]? = nil) async throws -> [String: DocPresentInfo] {
 		let docs = if let documents { documents } else { try? await storageService.loadDocuments(status: .issued) }
-		let dictValues = await docModels.asyncCompactMap { m -> (String, DocPresentInfo)? in
+		let models = await MainActor.run { docModels }
+		let dictValues = await models.asyncCompactMap { m -> (String, DocPresentInfo)? in
 			guard let doc = docs?.first(where: { $0.id == m.id }), let dki = DocKeyInfo(from: doc.docKeyInfo) else { return nil }
 			let bValid = (try? await hasAnyCredential(id: m.id)) ?? false
 			guard bValid else { return nil }
@@ -227,14 +247,15 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 	}
 
 	public func getCredentialsUsageCount(id: String) async throws -> CredentialsUsageCounts? {
-		let secureAreaName = getDocumentModel(id: id)?.secureAreaName
+		let secureAreaName = await MainActor.run { docModels.first(where: { $0.id == id })?.secureAreaName }
 		return try await Self.getCredentialsUsageCount(id: id, secureAreaName: secureAreaName)
 	}
 
 	public static func getCredentialsUsageCount(id: String, secureAreaName: String?) async throws -> CredentialsUsageCounts? {
 		let kbi = try await SecureAreaRegistry.shared.get(name: secureAreaName).getKeyBatchInfo(id: id)
 		let remaining: Int? = if kbi.credentialPolicy == .rotateUse { nil } else { kbi.usedCounts.count { $0 == 0 } }
-		return remaining.map { try! CredentialsUsageCounts(total: kbi.usedCounts.count, remaining: $0) }
+		guard let remaining else { return nil }
+		return try CredentialsUsageCounts(total: kbi.usedCounts.count, remaining: remaining)
 	}
 
 	/// Load documents from storage
@@ -243,14 +264,15 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 	/// - Returns: An array of ``WalletStorage.Document`` objects
 	@discardableResult public func loadDocuments(status: WalletStorage.DocumentStatus, uiCulture: String?) async throws -> [WalletStorage.Document]?  {
 		do {
-			guard let docs = try await storageService.loadDocuments(status: status) else { return nil }
+			let storedDocuments = try await storageService.loadDocuments(status: status)
+			let docs = storedDocuments ?? []
 			let docs2 = docs.map { document in
 				let displayName = document.getDisplayName(uiCulture)
 				return WalletStorage.Document(id: document.id, docType: document.docType, docDataFormat: document.docDataFormat, data: document.data, docKeyInfo: document.docKeyInfo, createdAt: document.createdAt, modifiedAt: document.modifiedAt, metadata: document.metadata, displayName: displayName, status: document.status)
 			}
 			await refreshDocModels(docs2, uiCulture: uiCulture, docStatus: status)
 			await refreshPublishedVars()
-			return docs
+			return storedDocuments
 		} catch {
 			await setError(error)
 			throw error
@@ -274,26 +296,26 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 		}
 	}
 
-	func getTypedDoc<T>(of: T.Type = T.self) -> T? where T: DocClaimsModel {
+	@MainActor func getTypedDoc<T>(of: T.Type = T.self) -> T? where T: DocClaimsModel {
 		docModels.first(where: { type(of: $0) == of}) as? T
 	}
 
-	func getTypedDocs<T>(of: T.Type = T.self) -> [T] where T: DocClaimsModel {
+	@MainActor func getTypedDocs<T>(of: T.Type = T.self) -> [T] where T: DocClaimsModel {
 		docModels.filter({ type(of: $0) == of}).map { $0 as! T }
 	}
 
 	/// Get document model by index
 	/// - Parameter index: Index in array of loaded models
 	/// - Returns: The ``DocClaimsModel`` model
-	func getDocumentModel(index: Int) -> DocClaimsModel? {
-		guard index < docModels.count else { return nil }
+	@MainActor func getDocumentModel(index: Int) -> DocClaimsModel? {
+		guard docModels.indices.contains(index) else { return nil }
 		return docModels[index]
 	}
 
 	/// Get document model by id
 	/// - Parameter id: The id of the document model to retrieve
 	/// - Returns: The ``DocClaimsModel`` model
-	public func getDocumentModel(id: String) ->  DocClaimsModel? {
+	@MainActor public func getDocumentModel(id: String) ->  DocClaimsModel? {
 		guard let i = docModels.map(\.id).firstIndex(of: id) else { return nil }
 		return getDocumentModel(index: i)
 	}
@@ -302,7 +324,7 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 	///
 	/// - Parameter docType: A string representing the type of document to retrieve.
 	/// - Returns: An array of objects conforming to the `DocClaimsModel` protocol.
-	public func getDocumentModels(docType: String) -> [DocClaimsModel] {
+	@MainActor public func getDocumentModels(docType: String) -> [DocClaimsModel] {
 		return (0..<docModels.count).compactMap { i in
 			guard docModels[i].docType == docType else { return nil }
 			return getDocumentModel(index: i)
@@ -318,20 +340,16 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 	///
 	/// - Throws: An error if the document could not be deleted.
 	public func deleteDocument(id: String, status: DocumentStatus) async throws {
-		let index = switch status {
-			case .issued: docModels.firstIndex(where: { $0.id == id});
-			case .pending: pendingDocuments.firstIndex(where: { $0.id == id});
-			default: deferredDocuments.firstIndex(where: { $0.id == id})
-			}
-		guard let index else { throw PresentationSession.makeError(str: "Document to delete \(id) not found") }
 		do {
 			try await storageService.deleteDocument(id: id, status: status)
-			if status == .issued {
-				_ = await MainActor.run { docModels.remove(at: index) }
-				await refreshPublishedVars()
+			await MainActor.run {
+				switch status {
+				case .issued: docModels.removeAll { $0.id == id }
+				case .pending: pendingDocuments.removeAll { $0.id == id }
+				case .deferred: deferredDocuments.removeAll { $0.id == id }
+				}
 			}
-			else if status == .pending { _ = await MainActor.run { pendingDocuments.remove(at: index) }}
-			else if status == .deferred { _ = await MainActor.run { deferredDocuments.remove(at: index) }}
+			await refreshPublishedVars()
 		} catch {
 			await setError(error)
 			throw error
@@ -351,6 +369,7 @@ public final class StorageManager: ObservableObject, @unchecked Sendable {
 			} else if status == .deferred {
 				await MainActor.run { deferredDocuments.removeAll(keepingCapacity:false) }
 			}
+			await refreshPublishedVars()
 		} catch {
 			await setError(error)
 			throw error

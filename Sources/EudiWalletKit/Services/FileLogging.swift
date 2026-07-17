@@ -18,31 +18,63 @@
 import Logging
 import Foundation
 // Adapted from https://nshipster.com/textoutputstream/
+private final class LockedFileSink: @unchecked Sendable {
+	private let fileHandle: FileHandle
+	private let lock = NSLock()
+
+	init(fileHandle: FileHandle) {
+		self.fileHandle = fileHandle
+	}
+
+	func write(_ data: Data) {
+		lock.withLock {
+			fileHandle.seekToEndOfFile()
+			fileHandle.write(data)
+		}
+	}
+}
+
+private final class FileSinkRegistry: @unchecked Sendable {
+	static let shared = FileSinkRegistry()
+	private let lock = NSLock()
+	private var sinks: [String: LockedFileSink] = [:]
+
+	private init() {}
+
+	func sink(for url: URL) throws -> LockedFileSink {
+		try lock.withLock {
+			let key = url.standardizedFileURL.path
+			if let sink = sinks[key] { return sink }
+			if !FileManager.default.fileExists(atPath: key) {
+				guard FileManager.default.createFile(atPath: key, contents: nil, attributes: nil) else {
+					throw FileHandlerOutputStream.StreamError.couldNotCreateFile
+				}
+			}
+			let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: key))
+			let sink = LockedFileSink(fileHandle: handle)
+			sinks[key] = sink
+			return sink
+		}
+	}
+}
+
 struct FileHandlerOutputStream: TextOutputStream, Sendable {
-    enum FileHandlerOutputStream: Error {
+    enum StreamError: Error {
         case couldNotCreateFile
     }
 
-    private let fileHandle: FileHandle
+	private let sink: LockedFileSink
     let encoding: String.Encoding
 
-    init(localFile url: URL, encoding: String.Encoding = .utf8) throws {
-        if !FileManager.default.fileExists(atPath: url.path) {
-            guard FileManager.default.createFile(atPath: url.path, contents: nil, attributes: nil) else {
-                throw FileHandlerOutputStream.couldNotCreateFile
-            }
-        }
-
-        let fileHandle = try FileHandle(forWritingTo: url)
-        fileHandle.seekToEndOfFile()
-        self.fileHandle = fileHandle
+	init(localFile url: URL, encoding: String.Encoding = .utf8) throws {
+		self.sink = try FileSinkRegistry.shared.sink(for: url)
         self.encoding = encoding
     }
 
-    mutating func write(_ string: String) {
-        if let data = string.data(using: encoding) {
-            fileHandle.write(data)
-        }
+	mutating func write(_ string: String) {
+		if let data = string.data(using: encoding) {
+			sink.write(data)
+		}
     }
 }
 
@@ -114,15 +146,9 @@ public struct FileLogHandler: LogHandler {
         return !metadata.isEmpty ? metadata.map { "\($0)=\($1)" }.joined(separator: " ") : nil
     }
 
-    private func timestamp() -> String {
-        var buffer = [Int8](repeating: 0, count: 255)
-        var timestamp = time(nil)
-        let localTime = localtime(&timestamp)
-        strftime(&buffer, buffer.count, "%Y-%m-%dT%H:%M:%S%z", localTime)
-        return buffer.withUnsafeBufferPointer {
-            $0.withMemoryRebound(to: CChar.self) {
-                String(cString: $0.baseAddress!)
-            }
-        }
-    }
+	private func timestamp() -> String {
+		let formatter = ISO8601DateFormatter()
+		formatter.formatOptions = [.withInternetDateTime]
+		return formatter.string(from: Date())
+	}
 }

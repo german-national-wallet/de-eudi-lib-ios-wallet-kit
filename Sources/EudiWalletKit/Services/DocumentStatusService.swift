@@ -20,30 +20,40 @@ import StatiumSwift
 
 public actor DocumentStatusService {
 	let statusIdentifier: StatusIdentifier
-	let verifier: VerifyStatusListTokenSignature?
-	let date: Date?
+	let verifier: (any VerifyStatusListTokenSignature)?
+	let date: Date
 	let clockSkew: TimeInterval
+	let networkingService: any NetworkingServiceType
 
-	public init(statusIdentifier: StatusIdentifier, date: Date = .now, clockSkew: TimeInterval = 60, verifier: VerifyStatusListTokenSignature? = nil) {
+	public init(statusIdentifier: StatusIdentifier, date: Date = .now, clockSkew: TimeInterval = 60, verifier: any VerifyStatusListTokenSignature, networkingService: (any NetworkingServiceType)? = nil) {
 		self.statusIdentifier = statusIdentifier
 		self.verifier = verifier
 		self.date = date
 		self.clockSkew = clockSkew
+		self.networkingService = networkingService ?? StatusNetworkingAdapter(networking: URLSession.shared)
+	}
+
+	/// Compatibility initializer. Prefer the overload with a required verifier.
+	@available(*, deprecated, message: "Pass a status-list signature verifier explicitly")
+	public init(statusIdentifier: StatusIdentifier, date: Date = .now, clockSkew: TimeInterval = 60, verifier: (any VerifyStatusListTokenSignature)? = nil, networkingService: (any NetworkingServiceType)? = nil) {
+		self.statusIdentifier = statusIdentifier
+		self.verifier = verifier
+		self.date = date
+		self.clockSkew = clockSkew
+		self.networkingService = networkingService ?? StatusNetworkingAdapter(networking: URLSession.shared)
 	}
 
 	public func getStatus() async throws -> CredentialStatus {
+		guard let verifier else {
+			throw WalletError(description: "A status-list signature verifier is required; use the verifier initializer")
+		}
 		guard let statusReference: StatusReference = .init(idx: statusIdentifier.idx, uriString: statusIdentifier.uriString) else {
 			throw WalletError(description: "Invalid status identifier")
 		}
+		try EudiWallet.validateHTTPSRemoteURL(statusReference.uri, purpose: "Status list")
 		let getStatus = GetStatus()
-		let tokenFetcher = StatusListTokenFetcher(verifier: verifier ?? VerifyStatusListTokenSignatureIgnore())
+		let tokenFetcher = StatusListTokenFetcher(networkingService: networkingService, verifier: verifier, date: date)
 		let result = try await getStatus.getStatus(index: statusReference.idx, url: statusReference.uri, fetchClaims: tokenFetcher.getStatusClaims, clockSkew: clockSkew).get()
 		return result
-	}
-}
-
-struct VerifyStatusListTokenSignatureIgnore: VerifyStatusListTokenSignature {
-	func verify(statusListToken: Data, format: StatusListTokenFormat, at: Date) {
-		// No verification logic, ignore the signature
 	}
 }
