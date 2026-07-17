@@ -86,7 +86,13 @@ public final class OpenId4VpService: @unchecked Sendable, PresentationService {
 		}
 		self.openid4VPlink = openid4VPlink
 		self.openID4VpConfig = openID4VpConfig
-		self.networking = networking
+		if let wrapper = networking as? OpenID4VPNetworking {
+			self.networking = wrapper
+		} else if let bounded = networking as? any BoundedNetworkingProtocol {
+			self.networking = OpenID4VPNetworking(networking: bounded)
+		} else {
+			throw PresentationSession.makeError(str: "OpenID4VP networking must support bounded response streaming")
+		}
 		self.crlRevocationPolicy = crlRevocationPolicy
 		transactionLog = TransactionLogUtils.initializeTransactionLog(type: .presentation, dataFormat: .json)
 	}
@@ -401,18 +407,27 @@ extension VerifiablePresentation {
 }
 
 struct OpenID4VPNetworking: Networking {
-	let networking: any NetworkingProtocol
+	static let maximumProtocolResponseBytes = 32 * 1_024 * 1_024
+	let networking: any BoundedNetworkingProtocol
 
-	init(networking: any NetworkingProtocol) {
+	init(networking: any BoundedNetworkingProtocol) {
 		self.networking = networking
 	}
 
 	func data(from url: URL) async throws -> (Data, URLResponse) {
-		try await networking.data(from: url)
+		try await data(for: URLRequest(url: url))
 	}
 
 	func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-		try await networking.data(for: request)
+		guard let requestURL = request.url else {
+			throw WalletError(description: "Protocol request has no URL")
+		}
+		try EudiWallet.validateHTTPSRemoteURL(requestURL, purpose: "OpenID4VP request")
+		let result = try await networking.data(for: request, maximumResponseBytes: Self.maximumProtocolResponseBytes)
+		if let finalURL = result.1.url {
+			try EudiWallet.validateHTTPSRemoteURL(finalURL, purpose: "OpenID4VP response")
+		}
+		return result
 	}
 }
 

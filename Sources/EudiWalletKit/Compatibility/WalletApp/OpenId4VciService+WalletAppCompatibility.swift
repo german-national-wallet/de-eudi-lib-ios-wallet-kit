@@ -10,8 +10,15 @@ import JOSESwift
 import Security
 import WalletStorage
 
+private struct IndexedCompatibilityDocument: Sendable {
+	let index: Int
+	let document: WalletStorage.Document
+}
+
 extension OpenId4VciService {
 	func issuePAR(_ docTypeIdentifier: DocTypeIdentifier, credentialOptions: CredentialOptions?, keyOptions: KeyOptions? = nil, promptMessage: String? = nil) async throws -> WalletStorage.Document? {
+		let operationToken = try beginExclusiveIssuanceOperation()
+		defer { endExclusiveIssuanceOperation(operationToken) }
 		let usedCredentialOptions = try await validateCredentialOptions(docTypeIdentifier: docTypeIdentifier, credentialOptions: credentialOptions)
 		try await prepareIssuing(
 			id: UUID().uuidString,
@@ -33,13 +40,14 @@ extension OpenId4VciService {
 		authRequested = parPlaced
 
 		let metadataKey = UUID().uuidString
-		Self.credentialOfferCache[metadataKey] = offer
+		cache.store(offer, for: metadataKey)
 
 		let outcome = IssuanceOutcome.pending(
 			PendingIssuanceModel(
-				pendingReason: .presentation_request_url(parPlaced.authorizationCodeURL.url.absoluteString),
-				configuration: configuration,
-				metadataKey: metadataKey,
+					pendingReason: .presentation_request_url(parPlaced.authorizationCodeURL.url.absoluteString),
+					configuration: configuration,
+					metadataKey: metadataKey,
+					offerRequestJSON: try Self.makeCredentialOfferRequestJSON(offer),
 				pckeCodeVerifier: parPlaced.pkceVerifier.codeVerifier,
 				pckeCodeVerifierMethod: parPlaced.pkceVerifier.codeVerifierMethod,
 				state: parPlaced.state
@@ -55,21 +63,31 @@ extension OpenId4VciService {
 		)
 	}
 
-	func resumePendingIssuanceDocuments(pendingDoc: WalletStorage.Document, authorizationCode: String, nonce: String?, docTypeIdentifiers: [DocTypeIdentifier], credentialOptions: CredentialOptions, keyOptions: KeyOptions? = nil, promptMessage: String? = nil) async throws -> [WalletStorage.Document] {
+	func resumePendingIssuanceDocuments(pendingDoc: WalletStorage.Document, authorizationCode: String, authorizationState: String, nonce: String?, docTypeIdentifiers: [DocTypeIdentifier], credentialOptions: CredentialOptions, keyOptions: KeyOptions? = nil, promptMessage: String? = nil) async throws -> [WalletStorage.Document] {
 		guard pendingDoc.status == .pending else {
 			throw PresentationSession.makeError(str: "Invalid document status for pending issuance: \(pendingDoc.status)")
 		}
+		let operationToken = try beginExclusiveIssuanceOperation()
+		defer { endExclusiveIssuanceOperation(operationToken) }
+		try beginIssuanceResume(id: pendingDoc.id, status: .pending)
+		defer { endIssuanceResume(id: pendingDoc.id, status: .pending) }
+		let storedPendingDoc = try await persistedPlaceholder(matching: pendingDoc, status: .pending)
 
-		let model = try JSONDecoder().decode(PendingIssuanceModel.self, from: pendingDoc.data)
+		let model = try JSONDecoder().decode(PendingIssuanceModel.self, from: storedPendingDoc.data)
+		try validateConfiguredIssuer(model.configuration.credentialIssuerIdentifier)
 		guard case .presentation_request_url = model.pendingReason else {
 			throw WalletError(description: "Unknown pending reason: \(model.pendingReason)")
 		}
-		if Self.credentialOfferCache[model.metadataKey] == nil, let cachedOffer = Self.credentialOfferCache.values.first {
-			Self.credentialOfferCache[model.metadataKey] = cachedOffer
-		}
-		guard let offer = Self.credentialOfferCache[model.metadataKey] else {
+		let validatedAuthorizationState = try Self.validateAuthorizationState(authorizationState, expectedState: model.state)
+		let offer: CredentialOffer
+		if let cachedOffer = cache.credentialOffer(for: model.metadataKey) {
+			offer = cachedOffer
+		} else if let requestJSON = model.offerRequestJSON {
+			offer = try await resolvePersistedCredentialOffer(requestJSON)
+		} else {
 			throw WalletError(description: "Pending issuance cannot be completed")
 		}
+		try validateConfiguredIssuer(offer.credentialIssuerIdentifier.url.absoluteString)
 
 		let (credentialIssuerIdentifier, metadata) = try await resolveIssuerMetadata()
 		guard let authorizationServer = metadata.authorizationServers?.first else {
@@ -101,6 +119,8 @@ extension OpenId4VciService {
 		let networking = self.networking
 		let storage = self.storage
 		let storageService = self.storageService
+		let transactionLogger = self.transactionLogger
+		let cache = self.cache
 
 		let docTypes = credentialConfigurations.map {
 			OfferedDocModel(
@@ -117,9 +137,15 @@ extension OpenId4VciService {
 			)
 		}
 
-		let issuer = try await getIssuerForWalletAppCompatibility(offer: offer, nonce: nonce, dpopKeyOptions: keyOptions.map { KeyOptions(curve: $0.curve, secureAreaName: $0.secureAreaName) })
+		let storedDpopKeyId = DocMetadata(from: storedPendingDoc.metadata)?.dpopKeyId
+		let issuer = try await getIssuerForWalletAppCompatibility(
+			offer: offer,
+			nonce: nonce,
+			dpopKeyId: storedDpopKeyId,
+			dpopKeyOptions: keyOptions.map { KeyOptions(curve: $0.curve, secureAreaName: $0.secureAreaName) }
+		)
 		let pkceVerifier = try PKCEVerifier(codeVerifier: model.pckeCodeVerifier, codeVerifierMethod: model.pckeCodeVerifierMethod)
-		let authorizationCodeURL = try AuthorizationCodeURL(urlString: pendingDoc.authorizePresentationUrl ?? "")
+		let authorizationCodeURL = try AuthorizationCodeURL(urlString: storedPendingDoc.authorizePresentationUrl ?? "")
 		let request = AuthorizationRequested(
 			credentials: [try .init(value: model.configuration.configurationIdentifier.value)],
 			authorizationCodeURL: authorizationCodeURL,
@@ -129,7 +155,7 @@ extension OpenId4VciService {
 			dpopNonce: nil
 		)
 		let authorized = try await issuer.authorizeWithAuthorizationCode(
-			serverState: request.state,
+			serverState: validatedAuthorizationState,
 			request: request,
 			authorizationCode: try AuthorizationCode(value: authorizationCode),
 			authorizationDetailsInTokenRequest: .doNotInclude,
@@ -140,7 +166,7 @@ extension OpenId4VciService {
 		let issuerLogoUrl = offer.credentialIssuerMetadata.display.map(\.displayMetadata).getLogo(uiCulture)?.uri?.absoluteString
 		let tokenDpopKeyId = issueReq.dpopKeyId
 
-		return try await withThrowingTaskGroup(of: WalletStorage.Document.self) { group in
+		let documents = try await withThrowingTaskGroup(of: IndexedCompatibilityDocument.self) { group in
 			for (index, docType) in docTypes.enumerated() {
 				group.addTask {
 					let service = try OpenId4VciService(
@@ -148,55 +174,68 @@ extension OpenId4VciService {
 						config: config,
 						networking: networking,
 						storage: storage,
-						storageService: storageService
+						storageService: storageService,
+						transactionLogger: transactionLogger,
+						cache: cache
 					)
-					let usedCredentialOptions = try await service.validateCredentialOptions(
-						docTypeIdentifier: docType.docTypeIdentifier!,
-						credentialOptions: docType.credentialOptions,
-						offer: offer
-					)
-					try await service.prepareIssuing(
-						id: UUID().uuidString,
-						docTypeIdentifier: docType.docTypeIdentifier!,
-						displayName: index > 0 ? nil : docTypes.map(\.displayName).joined(separator: ", "),
-						credentialOptions: usedCredentialOptions,
-						keyOptions: docType.keyOptions,
-						disablePrompt: index > 0,
-						promptMessage: promptMessage
-					)
-					await service.setAdditionalOptions(docType.identifier ?? "")
-					let (bindingKeys, publicKeys) = try await service.initSecurityKeys(credentialConfigurations[index], proofSubject: issuer.config.client.id)
-					let outcome = try await service.issueDocumentByOfferUrl(
-						issuer: issuer,
-						offer: offer,
-						authorizedOutcome: .authorized(authorized),
-						configuration: credentialConfigurations[index],
-						bindingKeys: bindingKeys,
-						publicKeys: publicKeys,
-						promptMessage: promptMessage
-					)
-
-					return try await self.finalizeIssuing(
-						issueOutcome: outcome,
-						docType: docType.docTypeOrVct,
-						format: credentialConfigurations[index].format,
-						issueReq: service.issueReq,
-						deleteId: nil,
-						dpopKeyId: tokenDpopKeyId,
-						issuerName: issuerName,
-						issuerIdentifier: issuerIdentifier,
-						issuerLogoUrl: issuerLogoUrl
-					)
+					do {
+						guard let docTypeIdentifier = docType.docTypeIdentifier else {
+							throw PresentationSession.makeError(str: "Missing credential identifier for pending issuance")
+						}
+						let usedCredentialOptions = try await service.validateCredentialOptions(
+							docTypeIdentifier: docTypeIdentifier,
+							credentialOptions: docType.credentialOptions,
+							offer: offer
+						)
+						try await service.prepareIssuing(
+							id: UUID().uuidString,
+							docTypeIdentifier: docTypeIdentifier,
+							displayName: index > 0 ? nil : docTypes.map(\.displayName).joined(separator: ", "),
+							credentialOptions: usedCredentialOptions,
+							keyOptions: docType.keyOptions,
+							disablePrompt: index > 0,
+							promptMessage: promptMessage
+						)
+						await service.setAdditionalOptions(docType.identifier ?? "")
+						let (bindingKeys, publicKeys) = try await service.initSecurityKeys(credentialConfigurations[index], proofSubject: issuer.config.client.id)
+						let outcome = try await service.issueDocumentByOfferUrl(
+							issuer: issuer,
+							offer: offer,
+							authorizedOutcome: .authorized(authorized),
+							configuration: credentialConfigurations[index],
+							bindingKeys: bindingKeys,
+							publicKeys: publicKeys,
+							promptMessage: promptMessage
+						)
+						let document = try await service.finalizeIssuing(
+							issueOutcome: outcome,
+							docType: docType.docTypeOrVct,
+							format: credentialConfigurations[index].format,
+							issueReq: service.issueReq,
+							deleteId: nil,
+							issuer: issuer,
+							dpopKeyId: tokenDpopKeyId,
+							issuerName: issuerName,
+							issuerIdentifier: issuerIdentifier,
+							issuerLogoUrl: issuerLogoUrl
+						)
+						return IndexedCompatibilityDocument(index: index, document: document)
+					} catch {
+						await service.cleanupIssueRequestKeys()
+						throw error
+					}
 				}
 			}
 
-			var documents = [WalletStorage.Document]()
+			var indexedDocuments = [IndexedCompatibilityDocument]()
 			for try await document in group {
-				documents.append(document)
+				indexedDocuments.append(document)
 			}
-			try? await storage.removePendingOrDeferredDoc(id: pendingDoc.id)
-			return documents
+			try? await storage.removePendingOrDeferredDoc(id: storedPendingDoc.id)
+			return indexedDocuments.sorted { $0.index < $1.index }.map(\.document)
 		}
+		cache.removeCredentialOffer(for: model.metadataKey)
+		return documents
 	}
 
 	private func setAdditionalOptions(_ value: String) {
@@ -204,6 +243,8 @@ extension OpenId4VciService {
 	}
 
 	func getCredentialsWithRefreshToken(docTypeIdentifiers: [DocTypeIdentifier], authorized: AuthorizedRequest, issuerDPopConstructorParam: IssuerDPoPConstructorParam, docIds: [String], credentialOptions: CredentialOptions?, keyOptions: KeyOptions? = nil, promptMessage: String? = nil, forceRefreshToken: Bool = false) async throws -> ([WalletStorage.Document], AuthorizedRequest) {
+		let operationToken = try beginExclusiveIssuanceOperation()
+		defer { endExclusiveIssuanceOperation(operationToken) }
 		guard !docTypeIdentifiers.isEmpty else { return ([], authorized) }
 		guard docTypeIdentifiers.count == docIds.count else {
 			throw WalletError(description: "Refresh token: docTypeIdentifiers (\(docTypeIdentifiers.count)) and docIds (\(docIds.count)) count mismatch")
@@ -251,7 +292,16 @@ extension OpenId4VciService {
 			grants: nil,
 			authorizationServerMetadata: authorizationServerMetadata
 		)
-		let issuer = try await getIssuerForWalletAppCompatibility(offer: offer, dpopKeyId: storedDpopKeyId, dpopKeyOptions: keyOptions.map { KeyOptions(curve: $0.curve, secureAreaName: $0.secureAreaName) })
+		let dpopConstructor = try makeIssuerDPoPConstructor(
+			from: issuerDPopConstructorParam,
+			supportedAlgorithms: authorizationServerMetadata.dpopSigningAlgValuesSupported
+		)
+		let issuer = try await getIssuerForWalletAppCompatibility(
+			offer: offer,
+			dpopKeyId: storedDpopKeyId,
+			dpopKeyOptions: keyOptions.map { KeyOptions(curve: $0.curve, secureAreaName: $0.secureAreaName) },
+			dpopConstructor: dpopConstructor
+		)
 
 		// Refresh the access token ONCE for the whole batch. The refresh_token grant keeps the original
 		// authorization scope, so the re-minted token can request every configuration in the offer.
@@ -269,9 +319,11 @@ extension OpenId4VciService {
 		let networking = self.networking
 		let storage = self.storage
 		let storageService = self.storageService
+		let transactionLogger = self.transactionLogger
+		let cache = self.cache
 
 		// Loop only the credential API call per identifier, under the single refreshed authorization.
-		let documents = try await withThrowingTaskGroup(of: WalletStorage.Document.self) { group in
+		let documents = try await withThrowingTaskGroup(of: IndexedCompatibilityDocument.self) { group in
 			for (index, docTypeIdentifier) in docTypeIdentifiers.enumerated() {
 				let configuration = credentialConfigurations[index]
 				let deleteId = docIds[index]
@@ -281,8 +333,11 @@ extension OpenId4VciService {
 						config: config,
 						networking: networking,
 						storage: storage,
-						storageService: storageService
+						storageService: storageService,
+						transactionLogger: transactionLogger,
+						cache: cache
 					)
+					do {
 					let usedCredentialOptions = try await service.validateCredentialOptions(
 						docTypeIdentifier: docTypeIdentifier,
 						credentialOptions: credentialOptions,
@@ -308,7 +363,7 @@ extension OpenId4VciService {
 						publicKeys: publicKeys,
 						promptMessage: promptMessage
 					)
-					return try await service.finalizeIssuing(
+					let document = try await service.finalizeIssuing(
 						issueOutcome: outcome,
 						docType: docTypeIdentifier.docType,
 						format: configuration.format,
@@ -316,24 +371,81 @@ extension OpenId4VciService {
 						deleteId: deleteId,
 						dpopKeyId: storedDpopKeyId
 					)
+					return IndexedCompatibilityDocument(index: index, document: document)
+					} catch {
+						await service.cleanupIssueRequestKeys()
+						throw error
+					}
 				}
 			}
-			var documents = [WalletStorage.Document]()
+			var documents = [IndexedCompatibilityDocument]()
 			for try await document in group {
 				documents.append(document)
 			}
-			return documents
+			return documents.sorted { $0.index < $1.index }.map(\.document)
 		}
-		logger.info("Refresh token: re-issued \(documents.count) credential(s) under one refreshed authorization (replaced docIds \(docIds)).")
+		logger.info("Refresh token: re-issued \(documents.count) credential(s) under one refreshed authorization")
 		return (documents, refreshed)
 	}
 
-	private func getIssuerForWalletAppCompatibility(offer: CredentialOffer, nonce: String? = nil, dpopKeyId: String? = nil, useDpop: Bool? = nil, dpopKeyOptions: KeyOptions? = nil) async throws -> Issuer {
-		var dpopConstructor: DPoPConstructorType? = nil
-		if useDpop ?? config.requireDpop {
+	private func makeIssuerDPoPConstructor(from parameter: IssuerDPoPConstructorParam, supportedAlgorithms: [JWSAlgorithm]?) throws -> DPoPConstructor {
+		let declaredAlgorithm = parameter.jwk[JWKParameter.algorithm.rawValue]
+		let algorithmName: String = switch parameter.jwk.keyType {
+		case .EC:
+			try resolveECSigningAlgorithm(
+				curve: parameter.jwk[ECParameter.curve.rawValue],
+				declaredAlgorithm: declaredAlgorithm
+			)
+		case .RSA:
+			try resolveRSASigningAlgorithm(declaredAlgorithm)
+		case .OCT:
+			throw WalletError(description: "Symmetric JWKs cannot be used for DPoP")
+		}
+		guard SignatureAlgorithm(rawValue: algorithmName) != nil else {
+			throw WalletError(description: "Unsupported DPoP signing algorithm: \(algorithmName)")
+		}
+		let algorithm = JWSAlgorithm.parse(algorithmName)
+		if let supportedAlgorithms, !supportedAlgorithms.isEmpty,
+		   !supportedAlgorithms.contains(where: { $0.name == algorithm.name }) {
+			throw WalletError(description: "DPoP signing algorithm \(algorithm.name) is not supported by the authorization server")
+		}
+		return DPoPConstructor(
+			algorithm: algorithm,
+			jwk: parameter.jwk,
+			privateKey: .secKey(parameter.privateKey)
+		)
+	}
+
+	private func resolveECSigningAlgorithm(curve: String?, declaredAlgorithm: String?) throws -> String {
+		let curveAlgorithm = switch curve {
+		case ECCurveType.P256.rawValue: JWSAlgorithm(.ES256).name
+		case ECCurveType.P384.rawValue: JWSAlgorithm(.ES384).name
+		case ECCurveType.P521.rawValue: JWSAlgorithm(.ES512).name
+		default: throw WalletError(description: "Unsupported DPoP EC curve: \(curve ?? "missing")")
+		}
+		guard declaredAlgorithm == nil || declaredAlgorithm == curveAlgorithm else {
+			throw WalletError(description: "DPoP JWK algorithm \(declaredAlgorithm ?? "missing") does not match curve \(curve ?? "missing")")
+		}
+		return curveAlgorithm
+	}
+
+	private func resolveRSASigningAlgorithm(_ declaredAlgorithm: String?) throws -> String {
+		let algorithm = declaredAlgorithm ?? JWSAlgorithm(.RS256).name
+		guard algorithm.hasPrefix("RS") || algorithm.hasPrefix("PS") else {
+			throw WalletError(description: "DPoP JWK algorithm \(algorithm) is not compatible with an RSA key")
+		}
+		return algorithm
+	}
+
+	private func getIssuerForWalletAppCompatibility(offer: CredentialOffer, nonce: String? = nil, dpopKeyId: String? = nil, useDpop: Bool? = nil, dpopKeyOptions: KeyOptions? = nil, dpopConstructor suppliedDPoPConstructor: DPoPConstructorType? = nil) async throws -> Issuer {
+		var dpopConstructor = suppliedDPoPConstructor
+		if dpopConstructor == nil, useDpop ?? config.requireDpop {
+			guard let resolvedDpopKeyId = dpopKeyId ?? issueReq?.dpopKeyId else {
+				throw PresentationSession.makeError(str: "Pending issuance metadata is missing its DPoP key identifier")
+			}
 			dpopConstructor = try await config.makePoPConstructor(
 				popUsage: .dpop,
-				privateKeyId: dpopKeyId ?? issueReq.dpopKeyId,
+				privateKeyId: resolvedDpopKeyId,
 				algorithms: offer.authorizationServerMetadata.dpopSigningAlgValuesSupported,
 				keyOptions: dpopKeyOptions ?? config.dpopKeyOptions
 			)

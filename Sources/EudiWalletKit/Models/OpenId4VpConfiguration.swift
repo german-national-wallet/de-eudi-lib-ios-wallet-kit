@@ -19,6 +19,7 @@ import Copyable
 import struct OpenID4VP.PreregisteredClient
 import class OpenID4VP.JWSAlgorithm
 import enum OpenID4VP.WebKeySource
+import struct OpenID4VP.WebKeySet
 import enum OpenID4VP.ResponseEncryptionConfiguration
 import enum OpenID4VP.ResponseMode
 
@@ -118,7 +119,37 @@ public struct OpenId4VpConfiguration: Sendable {
 }
 
 extension PreregisteredClient {
+	private static func verifierJwksURL(_ verifierApiUri: String) -> URL? {
+		guard var components = URLComponents(string: verifierApiUri),
+			components.scheme?.lowercased() == "https",
+			let host = components.host,
+			!host.isEmpty,
+			components.user == nil,
+			components.password == nil,
+			components.fragment == nil else { return nil }
+		let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+		components.path = "/" + [basePath, "wallet/public-keys.json"].filter { !$0.isEmpty }.joined(separator: "/")
+		components.query = nil
+		components.fragment = nil
+		return components.url
+	}
+
+	/// Source-compatible initializer. Invalid verifier endpoints are represented
+	/// by an empty key set, so they fail authentication without trapping.
+	@available(*, deprecated, message: "Use init?(validatingClientId:verifierApiUri:verifierLegalName:) to reject invalid or non-HTTPS endpoints")
 	public init(clientId: String, verifierApiUri: String, verifierLegalName: String) {
-		self.init(clientId: clientId, legalName: verifierLegalName, jarSigningAlg: JWSAlgorithm(.RS256), jwkSetSource: WebKeySource.fetchByReference(url: URL(string: "\(verifierApiUri)/wallet/public-keys.json")!))
+		let source: WebKeySource
+		if let jwksURL = Self.verifierJwksURL(verifierApiUri) {
+			source = .fetchByReference(url: jwksURL)
+		} else {
+			source = .passByValue(webKeys: WebKeySet(keys: []))
+		}
+		self.init(clientId: clientId, legalName: verifierLegalName, jarSigningAlg: JWSAlgorithm(.RS256), jwkSetSource: source)
+	}
+
+	/// Validating initializer for callers that want malformed endpoints rejected immediately.
+	public init?(validatingClientId clientId: String, verifierApiUri: String, verifierLegalName: String) {
+		guard let jwksURL = Self.verifierJwksURL(verifierApiUri) else { return nil }
+		self.init(clientId: clientId, legalName: verifierLegalName, jarSigningAlg: JWSAlgorithm(.RS256), jwkSetSource: WebKeySource.fetchByReference(url: jwksURL))
 	}
 }

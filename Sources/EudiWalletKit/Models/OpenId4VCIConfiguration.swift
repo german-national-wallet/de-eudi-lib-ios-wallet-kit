@@ -25,6 +25,17 @@ import OpenID4VCI
 import Security
 import SwiftyJSON
 
+/// Controls how an SD-JWT signing certificate is bound to the configured
+/// credential issuer URL after its chain has been validated.
+public enum IssuerCertificateIdentityValidation: Sendable, Equatable {
+	/// Validate URI or DNS subject alternative names when the certificate
+	/// contains them. Certificates from profiles that do not define an issuer
+	/// URL identity remain bound by their issuer-scoped trust anchors.
+	case whenPresent
+	/// Require a URI or DNS subject alternative name that matches the issuer.
+	case required
+}
+
 @Copyable
 public struct OpenId4VciConfiguration: Sendable {
 	/// The URL of the credential issuer
@@ -47,10 +58,18 @@ public struct OpenId4VciConfiguration: Sendable {
 	/// - `.preferSigned(issuerTrust:)`: wallet sends `Accept: application/jwt, application/json`. If the issuer returns a signed JWT, the signature is verified against the supplied trust anchor; otherwise plain JSON is accepted as a fallback.
 	/// - `.requireSigned(issuerTrust:)`: wallet sends `Accept: application/jwt`. The issuer must return a signed JWT whose signature validates against the supplied trust anchor; plain JSON responses are rejected.
 	public let issuerMetadataPolicy: IssuerMetadataPolicy
+	/// Whether resolved issuer metadata should be cached by the service instance
+	public let cacheIssuerMetadata: Bool
 	/// Whether user authentication is required for credential issuance
 	public let userAuthenticationRequired: Bool
 	/// Key options for generating DPoP keys, if DPoP is used
 	public let dpopKeyOptions: KeyOptions?
+	/// Trusted root certificate chains used to validate issuer-provided x5c chains in SD-JWT credentials
+	public let trustedIssuerCertificates: [x5chain]?
+	/// Revocation policy for issuer-provided SD-JWT x5c certificate chains.
+	public let issuerCertificateRevocationPolicy: RevocationPolicy
+	/// Certificate-to-issuer identity validation policy.
+	public let issuerCertificateIdentityValidation: IssuerCertificateIdentityValidation
 
 	public init(
 		credentialIssuerURL: String?,
@@ -64,7 +83,9 @@ public struct OpenId4VciConfiguration: Sendable {
 		cacheIssuerMetadata: Bool = true,
 		userAuthenticationRequired: Bool = false,
 		dpopKeyOptions: KeyOptions? = nil,
-		trustedIssuerCertificates: [x5chain]? = nil
+		trustedIssuerCertificates: [x5chain]? = nil,
+		issuerCertificateRevocationPolicy: RevocationPolicy = .hardFail,
+		issuerCertificateIdentityValidation: IssuerCertificateIdentityValidation = .required
 	) {
 		self.credentialIssuerURL = credentialIssuerURL
 		self.clientId = clientId ?? "eudiw-abca"
@@ -74,8 +95,12 @@ public struct OpenId4VciConfiguration: Sendable {
 		self.parUsage = parUsage
 		self.requireDpop = requireDpop
 		self.issuerMetadataPolicy = issuerMetadataPolicy
+		self.cacheIssuerMetadata = cacheIssuerMetadata
 		self.userAuthenticationRequired = userAuthenticationRequired
 		self.dpopKeyOptions = dpopKeyOptions
+		self.trustedIssuerCertificates = trustedIssuerCertificates
+		self.issuerCertificateRevocationPolicy = issuerCertificateRevocationPolicy
+		self.issuerCertificateIdentityValidation = issuerCertificateIdentityValidation
 	}
 }
 extension CoseEcCurve {
@@ -115,10 +140,21 @@ extension OpenId4VciConfiguration {
 			let hasCompatibleExistingKey = existingKeyInfo != nil && keyOptions.secureAreaName == existingKeyInfo?.secureAreaName && keyOptions.curve == ecCurve && existingKeyInfo?.usedCounts.count == 1
 			let existingPublicKey: CoseKey? = if hasCompatibleExistingKey, let privateKeyId { try? await secureArea.getPublicKey(id: privateKeyId, index: 0, curve: ecCurve) } else { nil }
 			if hasCompatibleExistingKey, let privateKeyId, existingPublicKey == nil { try await secureArea.deleteKeyInfo(id: privateKeyId) }
-			let publicCoseKey: CoseKey =
-				if let existingPublicKey { existingPublicKey } else {
-					(try await secureArea.createKeyBatch(id: keyId, credentialOptions: CredentialOptions(credentialPolicy: .rotateUse, batchSize: 1), keyOptions: keyOptions)).first!
+			let publicCoseKey: CoseKey
+			if let existingPublicKey {
+				publicCoseKey = existingPublicKey
+			} else {
+				let createdKeys = try await secureArea.createKeyBatch(
+					id: keyId,
+					credentialOptions: CredentialOptions(credentialPolicy: .rotateUse, batchSize: 1),
+					keyOptions: keyOptions
+				)
+				guard let createdKey = createdKeys.first else {
+					try? await secureArea.deleteKeyInfo(id: keyId)
+					throw PresentationSession.makeError(str: "Secure area returned no key for proof-of-possession signing")
 				}
+				publicCoseKey = createdKey
+			}
 			let publicKeyJwk = try publicCoseKey.jwk
 			let unlockData = try await secureArea.unlockKey(id: keyId)
 			let signer = try SecureAreaSigner(secureArea: secureArea, id: keyId, index: 0, publicKey: publicKeyJwk.toJoseSwiftJWK(), curve: ecCurve, ecAlgorithm: ecAlgorithm, unlockData: unlockData)
