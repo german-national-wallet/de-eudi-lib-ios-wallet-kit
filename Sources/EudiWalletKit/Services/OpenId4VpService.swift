@@ -117,11 +117,11 @@ public final class OpenId4VpService: @unchecked Sendable, PresentationService {
 		switch await openId4Vp.authorize(fetcher: Fetcher<String>(session: networking), poster: Poster(session: networking), url: openid4VPURI)  {
 		case .notSecured(data: let rrd):
 			if case .redirectUri = rrd.client { return try handleRequestData(rrd) }
-			else { throw WalletError(description: "Not secured request", code: .invalidQueryResolution) }
+			else { throw WalletError(description: "Not secured request", code: .notSecuredRequest) }
 		case .invalidResolution(error: let error, dispatchDetails: let details):
 			logger.error("Invalid resolution: \(error.errorDescription ?? error.localizedDescription)")
 			if let details { logger.error("Details: \(details)") }
-			throw WalletError(description: "Invalid DCQL query: \(readerCertificateValidationMessage ?? error.errorDescription ?? error.localizedDescription)", code: .invalidQueryResolution, innerError: error)
+			throw WalletError(description: "OpenID4VP request error: \(readerCertificateValidationMessage ?? error.errorDescription ?? error.localizedDescription)", code: readerCertificateValidationMessage != nil ? .trustError : .invalidQueryResolution, innerError: error)
 		case let .jwt(request: rrd):
 			return try handleRequestData(rrd)
 		}
@@ -310,7 +310,7 @@ public final class OpenId4VpService: @unchecked Sendable, PresentationService {
 		let consent: ClientConsent = if let vpTokens, dcql != nil {
 			// Group by DCQL query id -> array of VPs
 			.vpToken(vpContent: .dcql(verifiablePresentations: Dictionary(grouping: vpTokens, by: { try! QueryId(value: $0.0) }).mapValues { $0.map { $0.2 } } ))
-		} else { .negative(message: "Rejected") }
+		} else { .negative(message: "access_denied") }
 		// Generate a direct post authorisation response, applying wallet-preferred response mode if configured
 		let response = try buildAuthorizationResponse(resolved: resolved, consent: consent)
 		let result: DispatchOutcome = try await openId4Vp.dispatch(response: response)
@@ -339,8 +339,7 @@ public final class OpenId4VpService: @unchecked Sendable, PresentationService {
 				}
 			}
 			let responsePayload = VpResponsePayload(verifiable_presentations: vpTokenValues, data_formats: data_formats, transaction_data: transactionData)
-			// Resolve document identity from the first presented document.
-			// docType comes from transferInfo.idsToDocTypes; displayName is not held on this service.
+			// Resolve document identity from the first presented document. docType comes from transferInfo.idsToDocTypes; displayName is not held on this service.
 			let firstDocId = vpTokens.compactMap { $0.1 }.first
 			let firstDocType = firstDocId.flatMap { transferInfo.idsToDocTypes[$0] }
 			TransactionLogUtils.setTransactionLogResponseInfo(deviceResponseBytes: try? JSONEncoder().encode(responsePayload), dataFormat: .json, sessionTranscript: Data(sessionTranscript.taggedEncoded.encode(options: CBOROptions())), responseMetadata: responseMetadata, documentId: firstDocId, docType: firstDocType, displayName: nil, transactionLog: &transactionLog)

@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-    http://www.apache.org/licenses/LICENSE-2.0
+	http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,13 +18,35 @@ import Foundation
 import MdocSecurity18013
 import OpenID4VCI
 
+#if canImport(EudiEtsi1196x2)
 /// `CertificateChainTrust` protocol required by OpenID4VCI's `IssuerMetadataPolicy`.
-struct IssuerMetadataChainTrust: CertificateChainTrust {
-    let trustManager: EtsiTrustManager
+public struct IssuerMetadataChainTrust: CertificateChainTrust {
+	public let trustManager: EtsiTrustManager
 
-    func isValid(chain: [String]) async -> Bool {
-        let chainData = chain.compactMap { Data(base64Encoded: $0) }
-        guard !chainData.isEmpty, chainData.count == chain.count else { return false }
+	public init(trustManager: EtsiTrustManager) {
+		self.trustManager = trustManager
+	}
+
+	public func isValid(chain: [String]) async -> Bool {
+		let chainData = chain.compactMap { Data(base64Encoded: $0) }
+		guard !chainData.isEmpty, chainData.count == chain.count else { return false }
 		return await trustManager.validateCertTrustPath(chain: chainData).0
-    }
+	}
 }
+#else
+/// `CertificateChainTrust` protocol required by OpenID4VCI's `IssuerMetadataPolicy`.
+/// Uses platform `SecTrust`-based validation when EudiEtsi1196x2 is not available.
+public struct IssuerMetadataChainTrust: CertificateChainTrust {
+	public let trustManager: SecTrustSource
+
+	public init(trustManager: SecTrustSource) {
+		self.trustManager = trustManager
+	}
+
+	public func isValid(chain: [String]) async -> Bool {
+		let chainData = chain.compactMap { Data(base64Encoded: $0) }
+		guard !chainData.isEmpty, chainData.count == chain.count else { return false }
+		return await trustManager.validateCertTrustPath(chain: chainData).0
+	}
+}
+#endif
