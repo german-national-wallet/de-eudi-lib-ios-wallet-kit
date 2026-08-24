@@ -135,7 +135,7 @@ if let warnings = result.wrpIssuerWarnings, !warnings.isEmpty {
 ### Resolving Credential offer
 
 The library provides the `resolveOfferUrlDocTypes(offerUri:authFlowRedirectionURI:)` method that resolves the credential offer URI.
-The method returns the resolved ``OfferedIssuanceModel`` object that contains the offer's data (offered document types, issuer name and transaction code specification for pre-authorized flow). When registration certificate validation is enabled (``OpenId4VciConfiguration/validateRegistrationCertificate``), the model also includes:
+The method returns the resolved ``OfferedIssuanceModel`` object that contains the offer's data (offered document types, issuer name, grants, and transaction code specification for pre-authorized flow). When registration certificate validation is enabled (``OpenId4VciConfiguration/validateRegistrationCertificate``), the model also includes:
 
 - ``OfferedIssuanceModel/wrpVciRegistrationPolicy`` — the parsed issuer registration policy decoded from the WRPRC.
 - ``OfferedIssuanceModel/wrpVciWarnings`` — validation warnings keyed by credential configuration identifier; the empty key holds request-wide warnings. `nil` when validation is not enabled.
@@ -205,7 +205,7 @@ The user is redirected in an authorization web view to the issuer's authorizatio
 ### Pre-Authorization code flow
 
 When Issuer supports the pre-authorization code flow, the resolved offer will also contain the corresponding
-information. Specifically, the `txCodeSpec` field in the ``OfferedIssuanceModel`` object will contain:
+information. The ``OfferedIssuanceModel/grants`` field exposes whether the offer includes `authorization_code`, `pre-authorized_code`, or both. When a transaction code is required, the `txCodeSpec` field in the ``OfferedIssuanceModel`` object will contain:
 
 - The input mode, whether it is NUMERIC or TEXT
 - The expected length of the input
