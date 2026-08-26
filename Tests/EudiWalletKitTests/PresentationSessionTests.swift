@@ -199,11 +199,9 @@ struct PresentationSessionTests {
                 legalName: "Resolved Legal Name"
             )
         ]
-        let wrpVpPolicy = WrpRegistrationPolicy(sub: "registration-sub", credentials: [])
-
+		let wrpVpPolicy = WrpRegistrationPolicy(sub: "sub", credentials: [], name: "registration-name")
         let relyingParty = TransactionLogUtils.getRelyingParty(requestInfo, wrpVpPolicy: wrpVpPolicy)
-
-        #expect(relyingParty?.name == "registration-sub")
+        #expect(relyingParty?.name == "registration-name")
         #expect(relyingParty?.isVerified == true)
     }
 
