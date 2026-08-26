@@ -30,7 +30,7 @@ public struct OpenId4VciConfiguration: Sendable {
 	/// The URL of the credential issuer
 	public let credentialIssuerURL: String?
 	/// The client identifier used for OpenID4VCI flows
-	public let clientId: String
+	public let clientId: String?
 	/// Configuration for key attestation, if supported by the issuer
 	public let keyAttestationsConfig: KeyAttestationConfiguration
 	/// The redirect URI used after authorization flow completion
@@ -74,7 +74,7 @@ public struct OpenId4VciConfiguration: Sendable {
 		trustedIssuerCertificates: [x5chain]? = nil
 	) {
 		self.credentialIssuerURL = credentialIssuerURL
-		self.clientId = clientId ?? "eudiw-abca"
+		self.clientId = clientId
 		self.keyAttestationsConfig = keyAttestationsConfig
 		self.authFlowRedirectionURI = authFlowRedirectionURI ?? URL(string: "eudi-openid4ci://authorize")!
 		self.authorizeIssuanceConfig = authorizeIssuanceConfig
@@ -166,7 +166,7 @@ extension OpenId4VciConfiguration {
 		}
 		return DPoPConstructor(algorithm: jwsAlgorithm, jwk: jwk, privateKey: signingKeyProxy)
 	}
-	
+
 	static let supportedCredentialReusePolicies: SupportedCredentialReusePolicies = .supported([.limitedTime, .onceOnly, .rotatingBatch])
 
 	func toOpenId4VCIConfig(credentialIssuerId: String, clientAttestationPopSigningAlgValuesSupported: [JWSAlgorithm], registrationCertificatePolicy: RegistrationCertificatePolicy? = nil) async throws -> OpenId4VCIConfig {
@@ -192,9 +192,11 @@ extension OpenId4VciConfiguration {
 			throw WalletError(description: "Unsupported DPoP algorithm: \(popConstructor.algorithm.name) for client attestation", code: .unsupportedAlgorithm)
 		}
 		let popJwtSpec = try ClientAttestationPoPJWTSpec(signingAlgorithm: signatureAlgorithm, duration: config.popKeyDuration ?? 300.0, typ: "oauth-client-attestation-pop+jwt")
-		let client: Client = .attested(id: clientId, alg: popConstructor.algorithm, jwk: popConstructor.jwk, popJwtSpec: popJwtSpec, clientAttestationProvider: { _ in
-			let attestation = try await attestationsProvider.getWalletAttestation(signingKey: signingKey)
-			return (try ClientAttestationJWT(jws: JWS(compactSerialization: attestation)), signingKey)
+		let attestation = try await attestationsProvider.getWalletAttestation(signingKey: signingKey)
+		let attestationJWT = try ClientAttestationJWT(jws: JWS(compactSerialization: attestation))
+		let resolvedClientId = try clientId ?? attestationJWT.decodeAsClientAttestationClaims().subject.value
+		let client: Client = .attested(id: resolvedClientId, alg: popConstructor.algorithm, jwk: popConstructor.jwk, popJwtSpec: popJwtSpec, clientAttestationProvider: { _ in
+			return (attestationJWT, signingKey)
 		})
 		return client
 	}

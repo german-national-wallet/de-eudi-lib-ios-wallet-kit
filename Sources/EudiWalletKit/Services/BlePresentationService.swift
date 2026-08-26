@@ -306,7 +306,7 @@ func handleStatusChange(_ newValue: TransferStatus) async {
 		let userRequestInfo = try await withCheckedThrowingContinuation { c in
 			continuationRequest = c
 		}
-		TransactionLogUtils.setCborTransactionLogRequestInfo(userRequestInfo, transactionLog: &transactionLog)
+		TransactionLogUtils.setCborTransactionLogRequestInfo(userRequestInfo, wrpVpPolicy: wrpVerifierPolicy, transactionLog: &transactionLog)
 		return [userRequestInfo]
 	}
 

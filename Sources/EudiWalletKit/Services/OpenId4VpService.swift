@@ -191,7 +191,7 @@ public final class OpenId4VpService: @unchecked Sendable, PresentationService {
 				)
 				logger.info("Verifier requested items: \(requestItems.mapValues { $0.mapValues { ar in ar.map(\.elementIdentifier) } })")
 				result.readerAuthResults = ["": rar]
-				TransactionLogUtils.setCborTransactionLogRequestInfo(result, transactionLog: &transactionLog)
+				TransactionLogUtils.setCborTransactionLogRequestInfo(result, wrpVpPolicy: wrpVerifierPolicy, transactionLog: &transactionLog)
 				results.append(result)
 			}
 			return results
