@@ -169,6 +169,41 @@ struct PresentationSessionTests {
         #expect(party.logoUrl == nil)
     }
 
+    // MARK: - RelyingParty
+
+    @Test("RelyingParty uses WRP registration legal name")
+    func testRelyingPartyUsesLegalName() {
+        var requestInfo = UserRequestInfo(docDataFormats: [:], itemsRequested: [:])
+        requestInfo.readerAuthResults = [
+            "": ReaderAuthenticationResult(
+                isValidated: true,
+                certificateIssuer: "Access Certificate CN",
+                legalName: "WRP Registration Identity"
+            )
+        ]
+
+        let relyingParty = TransactionLogUtils.getRelyingParty(requestInfo)
+
+        #expect(relyingParty?.name == "WRP Registration Identity")
+        #expect(relyingParty?.isVerified == true)
+    }
+
+    @Test("RelyingParty falls back to certificate issuer")
+    func testRelyingPartyFallsBackToCertificateIssuer() {
+        var requestInfo = UserRequestInfo(docDataFormats: [:], itemsRequested: [:])
+        requestInfo.readerAuthResults = [
+            "": ReaderAuthenticationResult(
+                isValidated: false,
+                certificateIssuer: "Access Certificate CN"
+            )
+        ]
+
+        let relyingParty = TransactionLogUtils.getRelyingParty(requestInfo)
+
+        #expect(relyingParty?.name == "Access Certificate CN")
+        #expect(relyingParty?.isVerified == false)
+    }
+
     // MARK: - IssuanceLogData
 
     @Test("IssuanceLogData parses from TransactionLog")

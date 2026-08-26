@@ -51,8 +51,8 @@ class TransactionLogUtils {
 	}
 
 	static func getRelyingParty(_ requestInfo: UserRequestInfo) -> TransactionLog.RelyingParty? {
-		guard let name = requestInfo.defaultReaderAuthResult?.certificateIssuer else { return nil }
 		let defaultReaderAuthResult = requestInfo.defaultReaderAuthResult
+		guard let name = defaultReaderAuthResult?.legalName ?? defaultReaderAuthResult?.certificateIssuer else { return nil }
 		let isVerified = defaultReaderAuthResult?.isValidated ?? false
 		let certificateChain = defaultReaderAuthResult?.certificateChain ?? []
 		let readerAuth = defaultReaderAuthResult?.authBytes
