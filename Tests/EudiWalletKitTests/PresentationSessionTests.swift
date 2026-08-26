@@ -181,10 +181,29 @@ struct PresentationSessionTests {
                 legalName: "WRP Registration Identity"
             )
         ]
+        let wrpVpPolicy = WrpRegistrationPolicy(sub: "registration-sub", credentials: [], name: "WRP Registration Identity")
 
-        let relyingParty = TransactionLogUtils.getRelyingParty(requestInfo)
+        let relyingParty = TransactionLogUtils.getRelyingParty(requestInfo, wrpVpPolicy: wrpVpPolicy)
 
         #expect(relyingParty?.name == "WRP Registration Identity")
+        #expect(relyingParty?.isVerified == true)
+    }
+
+    @Test("RelyingParty falls back to WRP registration subject")
+    func testRelyingPartyFallsBackToWrpRegistrationSubject() {
+        var requestInfo = UserRequestInfo(docDataFormats: [:], itemsRequested: [:])
+        requestInfo.readerAuthResults = [
+            "": ReaderAuthenticationResult(
+                isValidated: true,
+                certificateIssuer: "Access Certificate CN",
+                legalName: "Resolved Legal Name"
+            )
+        ]
+        let wrpVpPolicy = WrpRegistrationPolicy(sub: "registration-sub", credentials: [])
+
+        let relyingParty = TransactionLogUtils.getRelyingParty(requestInfo, wrpVpPolicy: wrpVpPolicy)
+
+        #expect(relyingParty?.name == "registration-sub")
         #expect(relyingParty?.isVerified == true)
     }
 
@@ -198,7 +217,7 @@ struct PresentationSessionTests {
             )
         ]
 
-        let relyingParty = TransactionLogUtils.getRelyingParty(requestInfo)
+        let relyingParty = TransactionLogUtils.getRelyingParty(requestInfo, wrpVpPolicy: nil)
 
         #expect(relyingParty?.name == "Access Certificate CN")
         #expect(relyingParty?.isVerified == false)

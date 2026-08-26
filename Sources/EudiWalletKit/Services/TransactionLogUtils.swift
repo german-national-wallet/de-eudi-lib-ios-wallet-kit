@@ -31,8 +31,8 @@ class TransactionLogUtils {
 		return transactionLog
 	}
 
-	static func setCborTransactionLogRequestInfo(_ requestInfo: UserRequestInfo, transactionLog: inout TransactionLog) {
-		transactionLog = transactionLog.copy(timestamp: getTimestamp(), rawRequest: requestInfo.deviceRequestBytes, relyingParty: TransactionLogUtils.getRelyingParty(requestInfo), dataFormat: .cbor)
+	static func setCborTransactionLogRequestInfo(_ requestInfo: UserRequestInfo, wrpVpPolicy: WrpRegistrationPolicy? = nil, transactionLog: inout TransactionLog) {
+		transactionLog = transactionLog.copy(timestamp: getTimestamp(), rawRequest: requestInfo.deviceRequestBytes, relyingParty: TransactionLogUtils.getRelyingParty(requestInfo, wrpVpPolicy: wrpVpPolicy), dataFormat: .cbor)
 	}
 
 	static func setCborTransactionLogResponseInfo(_ bleService: BlePresentationService, documentId: String?, docType: String?, displayName: String?, transactionLog: inout TransactionLog) {
@@ -50,9 +50,9 @@ class TransactionLogUtils {
 		transactionLog = TransactionLog(timestamp: getTimestamp(), status: .failed, errorMessage: error.localizedDescription, type: type, dataFormat: transactionLog.dataFormat)
 	}
 
-	static func getRelyingParty(_ requestInfo: UserRequestInfo) -> TransactionLog.RelyingParty? {
+	static func getRelyingParty(_ requestInfo: UserRequestInfo, wrpVpPolicy: WrpRegistrationPolicy?) -> TransactionLog.RelyingParty? {
 		let defaultReaderAuthResult = requestInfo.defaultReaderAuthResult
-		guard let name = defaultReaderAuthResult?.legalName ?? defaultReaderAuthResult?.certificateIssuer else { return nil }
+		guard let name = wrpVpPolicy?.name ?? defaultReaderAuthResult?.certificateIssuer else { return nil }
 		let isVerified = defaultReaderAuthResult?.isValidated ?? false
 		let certificateChain = defaultReaderAuthResult?.certificateChain ?? []
 		let readerAuth = defaultReaderAuthResult?.authBytes
