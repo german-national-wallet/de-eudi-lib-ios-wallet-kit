@@ -176,9 +176,26 @@ extension OpenId4VciConfiguration {
 				throw WalletError(description: "Registration certificate validation requires issuerMetadataPolicy to be .requireSigned", code: .invalidWrprc)
 			}
 		}
-		let client: Client = try await makeAttestationClient(config: keyAttestationsConfig, credentialIssuerId: credentialIssuerId, algorithms: clientAttestationPopSigningAlgValuesSupported)
+		// Attestation-based client authentication is negotiated from the authorization server
+		// metadata: when the AS advertises no `client_attestation_pop_signing_alg_values_supported`
+		// it does not support `attest_jwt_client_auth`, so the wallet acts as a public client
+		// (plain `client_id`, no attestation headers). Typical for EAA issuers; the PID provider
+		// advertises the algorithms and keeps taking the attested path.
+		let client: Client = if clientAttestationPopSigningAlgValuesSupported.isEmpty {
+			.public(id: clientId ?? "eudiw-abca")
+		} else {
+			try await makeAttestationClient(config: keyAttestationsConfig, credentialIssuerId: credentialIssuerId, algorithms: clientAttestationPopSigningAlgValuesSupported)
+		}
 		let clientAttestationPoPBuilder: ClientAttestationPoPBuilder = DefaultClientAttestationPoPBuilder()
-		return OpenId4VCIConfig(client: client, authFlowRedirectionURI: authFlowRedirectionURI, authorizeIssuanceConfig: authorizeIssuanceConfig, requirePAR: parUsage, clientAttestationPoPBuilder: clientAttestationPoPBuilder, issuerMetadataPolicy: issuerMetadataPolicy, requireDpop: requireDpop, supportedCredentialReusePolicies: Self.supportedCredentialReusePolicies, registrationCertificatePolicy: registrationCertificatePolicy)
+		// HAIP proof policy, additionally permitting plain (unattested) `jwt` proofs for
+		// credentials whose metadata does not require key attestation — credentials that do
+		// require it still demand an attested proof type.
+		let proofTypesPolicy = ProofTypesPolicy(
+			supportedAlgorithms: [JWSAlgorithm(.ES256)],
+			supportedProofTypes: [.jwtWithKeyAttestation, .attestation],
+			allowUnattestedJwtProofs: true
+		)
+		return OpenId4VCIConfig(client: client, authFlowRedirectionURI: authFlowRedirectionURI, authorizeIssuanceConfig: authorizeIssuanceConfig, requirePAR: parUsage, clientAttestationPoPBuilder: clientAttestationPoPBuilder, issuerMetadataPolicy: issuerMetadataPolicy, proofTypesPolicy: proofTypesPolicy, requireDpop: requireDpop, supportedCredentialReusePolicies: Self.supportedCredentialReusePolicies, registrationCertificatePolicy: registrationCertificatePolicy)
 	}
 
 	private func makeAttestationClient(config: KeyAttestationConfiguration, credentialIssuerId: String, algorithms: [JWSAlgorithm]?) async throws -> Client {

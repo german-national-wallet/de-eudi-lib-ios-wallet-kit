@@ -391,27 +391,33 @@ public final class EudiWallet: ObservableObject, @unchecked Sendable {
 	///   - uriOffer: url with offer
 	/// - Returns: Offered issue information model
 	public func resolveOfferUrlDocTypes(offerUri: String, authFlowRedirectionURI: URL?) async throws -> OfferedIssuanceModel {
-		let vciServiceFromOfferUri = await resolveVCIServiceFromOfferUri(offerUri)
-		let policy: IssuerMetadataPolicy = if let vciServiceFromOfferUri { await vciServiceFromOfferUri.config.issuerMetadataPolicy } else { trustConfig.issuerMetadataPolicy }
-		let fetcher = Fetcher<CredentialOfferRequestObject>(session: networkingVci)
-		let metadataResolver = OpenId4VciService.makeMetadataResolver(networkingVci)
-		let oidcFetcher = Fetcher<OIDCProviderMetadata>(session: networkingVci)
-		let oauthFetcher = Fetcher<AuthorizationServerMetadata>(session: networkingVci)
-		let authorizationResolver = AuthorizationServerMetadataResolver(oidcFetcher: oidcFetcher, oauthFetcher: oauthFetcher)
-		let resolver = CredentialOfferRequestResolver(fetcher: fetcher, credentialIssuerMetadataResolver: metadataResolver, authorizationServerMetadataResolver: authorizationResolver)
-		let result = await resolver.resolve(source: try .init(urlString: offerUri), policy: policy)
-		switch result {
-		case .success(let offer):
-			let credentialIssuerIdentifier = offer.credentialIssuerIdentifier
-			let urlString = credentialIssuerIdentifier.url.absoluteString
-			// CHECK: Must be pre-registered in registry
-			let vciService: OpenId4VciService = if let registeredService = await OpenId4VCIServiceRegistry.shared.getByIssuerURL(issuerURL: urlString) {
-				registeredService
-			} else { try await autoRegisterVciConfiguration(urlString, authFlowRedirectionURI) }
-			return try await vciService.resolveOfferDocTypes(offerUri: offerUri, offer: offer)
-		case .failure(let error):
-			throw WalletError(description: "Unable to resolve credential offer: \(error.localizedDescription)", code: .offerResolutionFailed, innerError: error)
+		let offer: CredentialOffer
+		if let cachedOffer = OpenId4VciService.credentialOfferCache[offerUri] {
+			offer = cachedOffer
+		} else {
+			let vciServiceFromOfferUri = await resolveVCIServiceFromOfferUri(offerUri)
+			let policy: IssuerMetadataPolicy = if let vciServiceFromOfferUri { await vciServiceFromOfferUri.config.issuerMetadataPolicy } else { trustConfig.issuerMetadataPolicy }
+			let fetcher = Fetcher<CredentialOfferRequestObject>(session: networkingVci)
+			let metadataResolver = OpenId4VciService.makeMetadataResolver(networkingVci)
+			let oidcFetcher = Fetcher<OIDCProviderMetadata>(session: networkingVci)
+			let oauthFetcher = Fetcher<AuthorizationServerMetadata>(session: networkingVci)
+			let authorizationResolver = AuthorizationServerMetadataResolver(oidcFetcher: oidcFetcher, oauthFetcher: oauthFetcher)
+			let resolver = CredentialOfferRequestResolver(fetcher: fetcher, credentialIssuerMetadataResolver: metadataResolver, authorizationServerMetadataResolver: authorizationResolver)
+			let result = await resolver.resolve(source: try .init(urlString: offerUri), policy: policy)
+			switch result {
+			case .success(let resolved):
+				offer = resolved
+			case .failure(let error):
+				throw WalletError(description: "Unable to resolve credential offer: \(error.localizedDescription)", code: .offerResolutionFailed, innerError: error)
+			}
 		}
+		let credentialIssuerIdentifier = offer.credentialIssuerIdentifier
+		let urlString = credentialIssuerIdentifier.url.absoluteString
+		// CHECK: Must be pre-registered in registry
+		let vciService: OpenId4VciService = if let registeredService = await OpenId4VCIServiceRegistry.shared.getByIssuerURL(issuerURL: urlString) {
+			registeredService
+		} else { try await autoRegisterVciConfiguration(urlString, authFlowRedirectionURI) }
+		return try await vciService.resolveOfferDocTypes(offerUri: offerUri, offer: offer)
 	}
 
 	/// Issue documents by offer URI.
@@ -424,24 +430,31 @@ public final class EudiWallet: ObservableObject, @unchecked Sendable {
 	/// - Returns: An ``IssuerResponse`` with the issued documents (saved in storage), the decoded issuer registration policy and any WRP registration certificate warnings.
 	public func issueDocumentsByOfferUrl(offerUri: String, docTypes: [OfferedDocModel], txCodeValue: String? = nil, promptMessage: String? = nil, configuration: OpenId4VciConfiguration? = nil) async throws -> IssuerResponse {
 		OpenId4VciService.clearIssuerMetadataCache()
-		let issuerMetadataPolicy = configuration?.issuerMetadataPolicy ?? trustConfig.issuerMetadataPolicy
-		let fetcher = Fetcher<CredentialOfferRequestObject>(session: networkingVci)
-		let metadataResolver = OpenId4VciService.makeMetadataResolver(networkingVci)
-		let oidcFetcher = Fetcher<OIDCProviderMetadata>(session: networkingVci)
-		let oauthFetcher = Fetcher<AuthorizationServerMetadata>(session: networkingVci)
-		let authorizationResolver = AuthorizationServerMetadataResolver(oidcFetcher: oidcFetcher, oauthFetcher: oauthFetcher)
-		let resolver = CredentialOfferRequestResolver(fetcher: fetcher, credentialIssuerMetadataResolver: metadataResolver, authorizationServerMetadataResolver: authorizationResolver)
-		let result = await resolver.resolve(source: try .init(urlString: offerUri), policy: issuerMetadataPolicy)
-		switch result {
-		case .success(let offer):
-			let urlString = offer.credentialIssuerIdentifier.url.absoluteString
-			let vciService = try await resolveVCIService(issuerName: urlString)
-			if let configuration {	await vciService.setConfiguration(configuration) }
-			let documents = try await vciService.issueDocumentsByOfferUrl(offerUri: offerUri, docTypes: docTypes, authorized: nil, documentId: nil, txCodeValue: txCodeValue, promptMessage: promptMessage)
-			return IssuerResponse(documents: documents, wrpIssuerWarnings: await vciService.wrpIssuerWarnings, wrpIssuerPolicy: await vciService.wrpIssuerPolicy)
-		case .failure(let error):
-			throw WalletError(description: "Unable to resolve credential offer: \(error.localizedDescription)", code: .offerResolutionFailed, innerError: error)
+		let offer: CredentialOffer
+		if let cachedOffer = OpenId4VciService.credentialOfferCache[offerUri] {
+			offer = cachedOffer
+		} else {
+			let issuerMetadataPolicy = configuration?.issuerMetadataPolicy ?? trustConfig.issuerMetadataPolicy
+			let fetcher = Fetcher<CredentialOfferRequestObject>(session: networkingVci)
+			let metadataResolver = OpenId4VciService.makeMetadataResolver(networkingVci)
+			let oidcFetcher = Fetcher<OIDCProviderMetadata>(session: networkingVci)
+			let oauthFetcher = Fetcher<AuthorizationServerMetadata>(session: networkingVci)
+			let authorizationResolver = AuthorizationServerMetadataResolver(oidcFetcher: oidcFetcher, oauthFetcher: oauthFetcher)
+			let resolver = CredentialOfferRequestResolver(fetcher: fetcher, credentialIssuerMetadataResolver: metadataResolver, authorizationServerMetadataResolver: authorizationResolver)
+			let result = await resolver.resolve(source: try .init(urlString: offerUri), policy: issuerMetadataPolicy)
+			switch result {
+			case .success(let resolved):
+				offer = resolved
+				OpenId4VciService.credentialOfferCache[offerUri] = resolved
+			case .failure(let error):
+				throw WalletError(description: "Unable to resolve credential offer: \(error.localizedDescription)", code: .offerResolutionFailed, innerError: error)
+			}
 		}
+		let urlString = offer.credentialIssuerIdentifier.url.absoluteString
+		let vciService = try await resolveVCIService(issuerName: urlString)
+		if let configuration {	await vciService.setConfiguration(configuration) }
+		let documents = try await vciService.issueDocumentsByOfferUrl(offerUri: offerUri, docTypes: docTypes, authorized: nil, documentId: nil, txCodeValue: txCodeValue, promptMessage: promptMessage)
+		return IssuerResponse(documents: documents, wrpIssuerWarnings: await vciService.wrpIssuerWarnings, wrpIssuerPolicy: await vciService.wrpIssuerPolicy)
 	}
 
 	/// Begin issuing a document by generating an issue request

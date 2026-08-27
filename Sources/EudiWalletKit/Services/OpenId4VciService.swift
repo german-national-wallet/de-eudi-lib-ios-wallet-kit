@@ -110,16 +110,23 @@ public actor OpenId4VciService {
 		let publicKeys = try Self.makePublicJwks(from: publicCoseKeys, algorithm: algType)
 		let unlockData = try await issueReq.secureArea.unlockKey(id: issueReq.id)
 		let funcKeyAttestationJWT: FuncKeyAttestationJWT = { nonce in try await self.getKeyAttestationJWT(publicKeys, nonce: nonce) }
-		let bindingKey: BindingKey
+		let bindingKeys: [BindingKey]
 		if configuration.supportsAttestationProofType {
 			// Send a single `attestation` proof for the whole batch. The key attestation JWT already attests every key
-			bindingKey = .attestation(keyAttestationJWT: funcKeyAttestationJWT)
+			bindingKeys = [.attestation(keyAttestationJWT: funcKeyAttestationJWT)]
 		} else if configuration.supportsJwtProofTypeWithAttestation, let pk = publicKeys.first {
-			bindingKey = try createBindingKey(pk, secureAreaSigningAlg: selectedAlgorithm, unlockData: unlockData, index: 0, funcKeyAttestationJWT: funcKeyAttestationJWT, issuer: issuer)
+			bindingKeys = [try createBindingKey(pk, secureAreaSigningAlg: selectedAlgorithm, unlockData: unlockData, index: 0, funcKeyAttestationJWT: funcKeyAttestationJWT, issuer: issuer)]
 		} else {
-			throw WalletError(description: "Unsupported credential configuration", code: .unsupportedCredentialConfiguration)
+			// The credential configuration does not require key attestation (its `jwt` proof type has
+			// no `key_attestations_required`), so send plain `jwt` proofs — one per key in the batch.
+			// Reaching here implies the `jwt` proof type exists: `credentialSigningAlgValuesSupported`
+			// is derived from it and was guarded non-empty above.
+			bindingKeys = try publicKeys.enumerated().map { index, publicKeyJWK in
+				let signer = try SecureAreaSigner(secureArea: issueReq.secureArea, id: issueReq.id, index: index, publicKey: publicKeyJWK, curve: publicKeyJWK.crv.coseEcCurve, ecAlgorithm: selectedAlgorithm, unlockData: unlockData)
+				return .jwt(algorithm: JWSAlgorithm(algType), jwk: publicKeyJWK, privateKey: .custom(signer), issuer: issuer)
+			}
 		}
-		return ([bindingKey], publicCoseKeys.map { Data($0.toCBOR(options: CBOROptions()).encode()) })
+		return (bindingKeys, publicCoseKeys.map { Data($0.toCBOR(options: CBOROptions()).encode()) })
 	}
 
 	func createKeyBatchWithAttestation(id: String, credentialOptions: CredentialOptions, keyOptions: KeyOptions?, nonce: String?) async throws -> BatchCreateKeyResult {
@@ -336,7 +343,9 @@ public actor OpenId4VciService {
 			let keyId = OpenId4VciConfiguration.generatePopKeyId(popUsage: .dpop, credentialIssuerId: credentialIssuerId)
 			dpopConstructor = try await config.makePoPConstructor(popUsage: .dpop, privateKeyId: keyId, algorithms: offer.authorizationServerMetadata.dpopSigningAlgValuesSupported, keyOptions: config.dpopKeyOptions)
 		}
-		guard let algs = offer.authorizationServerMetadata.clientAttestationPopSigningAlgValuesSupported else { throw WalletError(description: "No client attestation POP signing algorithms found", code: .noClientAttestationAlgorithmFound) }
+		// An AS without client-attestation POP algorithms doesn't support attestation-based
+		// client authentication; toOpenId4VCIConfig then falls back to a public client.
+		let algs = offer.authorizationServerMetadata.clientAttestationPopSigningAlgValuesSupported ?? []
 		let registrationCertificateEnforcement = makeRegistrationCertificatePolicy()
 		let vciConfig = try await config.toOpenId4VCIConfig(credentialIssuerId: credentialIssuerId, clientAttestationPopSigningAlgValuesSupported: algs, registrationCertificatePolicy: registrationCertificateEnforcement?.policy)
 		if let (_, validator) = registrationCertificateEnforcement {
@@ -368,7 +377,9 @@ public actor OpenId4VciService {
 	}
 
 	func getIssuerForDeferred(data: DeferredIssuanceModel, configuration: CredentialConfiguration) async throws -> (Issuer,DPoPConstructor?) {
-		guard let algs = configuration.clientAttestationPopSigningAlgValuesSupported else { throw WalletError(description: "No client attestation POP signing algorithms found", code: .noClientAttestationAlgorithmFound) }
+		// Absent algorithms → the AS doesn't support attestation-based client
+		// authentication; toOpenId4VCIConfig then falls back to a public client.
+		let algs = configuration.clientAttestationPopSigningAlgValuesSupported ?? []
 		let vciConfig = try await config.toOpenId4VCIConfig(credentialIssuerId: configuration.credentialIssuerIdentifier, clientAttestationPopSigningAlgValuesSupported: algs.map { JWSAlgorithm(name: $0) })
 		var dpopConstructor: DPoPConstructor? = nil
 		let dpopSigningAlgValuesSupported = configuration.dpopSigningAlgValuesSupported?.map { JWSAlgorithm(name: $0) }
@@ -414,7 +425,8 @@ public actor OpenId4VciService {
 			}
 		}
 		if let preAuthorizedCode, let authCode = try? IssuanceAuthorization(preAuthorizationCode: preAuthorizedCode, txCode: txCodeSpec) {
-			guard let algs = offer.authorizationServerMetadata.clientAttestationPopSigningAlgValuesSupported else { throw WalletError(description: "No client attestation POP signing algorithms found", code: .noClientAttestationAlgorithmFound) }
+			// Absent algorithms → public client (see getIssuer).
+			let algs = offer.authorizationServerMetadata.clientAttestationPopSigningAlgValuesSupported ?? []
 			let vciConfig = try await config.toOpenId4VCIConfig(credentialIssuerId: offer.credentialIssuerIdentifier.url.absoluteString, clientAttestationPopSigningAlgValuesSupported: algs)
 			let authorized = try await issuer.authorizeWithPreAuthorizationCode(credentialOffer: offer, authorizationCode: authCode, client: vciConfig.client, transactionCode: txCodeValue)
 			authorizedOutcome = .authorized(authorized)
@@ -767,13 +779,14 @@ public actor OpenId4VciService {
 		}
 	}
 
-	private func refreshAuthorization(issuer: Issuer, authorized: AuthorizedRequest, configuration: CredentialConfiguration, forceRefreshToken: Bool) async throws -> AuthorizedRequest {
+	func refreshAuthorization(issuer: Issuer, authorized: AuthorizedRequest, configuration: CredentialConfiguration, forceRefreshToken: Bool) async throws -> AuthorizedRequest {
 		guard authorized.isAccessTokenExpired() || forceRefreshToken else { return authorized }
 		if let refreshTokenExpiresIn = authorized.refreshToken?.expiresIn,
 		   authorized.isRefreshTokenExpired(clock: Date.now.timeIntervalSinceReferenceDate) {
 			logger.info("Issuance refresh token expired at \(Date(timeIntervalSinceReferenceDate: authorized.timeStamp + refreshTokenExpiresIn)).")
 		}
-		guard let algs = configuration.clientAttestationPopSigningAlgValuesSupported else { throw WalletError(description: "No client attestation POP signing algorithms found", code: .noClientAttestationAlgorithmFound) }
+		// Absent algorithms → public client (see getIssuer).
+		let algs = configuration.clientAttestationPopSigningAlgValuesSupported ?? []
 		let vciConfig = try await config.toOpenId4VCIConfig(
 			credentialIssuerId: configuration.credentialIssuerIdentifier,
 			clientAttestationPopSigningAlgValuesSupported: algs.map { JWSAlgorithm(name: $0) }
