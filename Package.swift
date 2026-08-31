@@ -17,7 +17,12 @@ let package = Package(
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-wallet-storage.git", exact: "0.23.2"),
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-sdjwt-swift.git", exact: "0.14.6"),
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-openid4vp-swift.git", exact: "0.41.0"),
-		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-openid4vci-swift.git", exact: "0.53.1"),
+		// LOCAL OVERRIDE — restores the plain `jwt` proof type (no key attestation) removed upstream
+		// in 0.36.0, needed for EAA issuers that do not require key attestation. Branch
+		// `feat/restore-plain-jwt-proof` on top of 0.53.1. Revert to the pinned release once
+		// upstream ships an equivalent.
+		.package(path: "../eudi-lib-ios-openid4vci-swift"),
+		// .package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-openid4vci-swift.git", exact: "0.53.1"),
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-statium-swift.git", exact: "0.5.0"),
     	.package(url: "https://github.com/apple/swift-docc-plugin", from: "1.5.0"),
 	],

@@ -182,7 +182,15 @@ extension OpenId4VciConfiguration {
 			try makePublicClient()
 		}
 		let clientAttestationPoPBuilder: ClientAttestationPoPBuilder = DefaultClientAttestationPoPBuilder()
-		return OpenId4VCIConfig(client: client, authFlowRedirectionURI: authFlowRedirectionURI, authorizeIssuanceConfig: authorizeIssuanceConfig, requirePAR: parUsage, clientAttestationPoPBuilder: clientAttestationPoPBuilder, issuerMetadataPolicy: issuerMetadataPolicy, requireDpop: requireDpop, supportedCredentialReusePolicies: Self.supportedCredentialReusePolicies, registrationCertificatePolicy: registrationCertificatePolicy)
+		// HAIP proof policy, additionally permitting plain (unattested) `jwt` proofs for
+		// credentials whose metadata does not require key attestation — credentials that do
+		// require it still demand an attested proof type.
+		let proofTypesPolicy = ProofTypesPolicy(
+			supportedAlgorithms: [JWSAlgorithm(.ES256)],
+			supportedProofTypes: [.jwtWithKeyAttestation, .attestation],
+			allowUnattestedJwtProofs: true
+		)
+		return OpenId4VCIConfig(client: client, authFlowRedirectionURI: authFlowRedirectionURI, authorizeIssuanceConfig: authorizeIssuanceConfig, requirePAR: parUsage, clientAttestationPoPBuilder: clientAttestationPoPBuilder, issuerMetadataPolicy: issuerMetadataPolicy, proofTypesPolicy: proofTypesPolicy, requireDpop: requireDpop, supportedCredentialReusePolicies: Self.supportedCredentialReusePolicies, registrationCertificatePolicy: registrationCertificatePolicy)
 	}
 
 	private func makePublicClient() throws -> Client {
