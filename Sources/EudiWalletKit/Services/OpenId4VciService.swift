@@ -110,16 +110,23 @@ public actor OpenId4VciService {
 		let publicKeys = try Self.makePublicJwks(from: publicCoseKeys, algorithm: algType)
 		let unlockData = try await issueReq.secureArea.unlockKey(id: issueReq.id)
 		let funcKeyAttestationJWT: FuncKeyAttestationJWT = { nonce in try await self.getKeyAttestationJWT(publicKeys, nonce: nonce) }
-		let bindingKey: BindingKey
+		let bindingKeys: [BindingKey]
 		if configuration.supportsAttestationProofType {
 			// Send a single `attestation` proof for the whole batch. The key attestation JWT already attests every key
-			bindingKey = .attestation(keyAttestationJWT: funcKeyAttestationJWT)
+			bindingKeys = [.attestation(keyAttestationJWT: funcKeyAttestationJWT)]
 		} else if configuration.supportsJwtProofTypeWithAttestation, let pk = publicKeys.first {
-			bindingKey = try createBindingKey(pk, secureAreaSigningAlg: selectedAlgorithm, unlockData: unlockData, index: 0, funcKeyAttestationJWT: funcKeyAttestationJWT, issuer: issuer)
+			bindingKeys = [try createBindingKey(pk, secureAreaSigningAlg: selectedAlgorithm, unlockData: unlockData, index: 0, funcKeyAttestationJWT: funcKeyAttestationJWT, issuer: issuer)]
 		} else {
-			throw WalletError(description: "Unsupported credential configuration", code: .unsupportedCredentialConfiguration)
+			// The credential configuration does not require key attestation (its `jwt` proof type has
+			// no `key_attestations_required`), so send plain `jwt` proofs — one per key in the batch.
+			// Reaching here implies the `jwt` proof type exists: `credentialSigningAlgValuesSupported`
+			// is derived from it and was guarded non-empty above.
+			bindingKeys = try publicKeys.enumerated().map { index, publicKeyJWK in
+				let signer = try SecureAreaSigner(secureArea: issueReq.secureArea, id: issueReq.id, index: index, publicKey: publicKeyJWK, curve: publicKeyJWK.crv.coseEcCurve, ecAlgorithm: selectedAlgorithm, unlockData: unlockData)
+				return .jwt(algorithm: JWSAlgorithm(algType), jwk: publicKeyJWK, privateKey: .custom(signer), issuer: issuer)
+			}
 		}
-		return ([bindingKey], publicCoseKeys.map { Data($0.toCBOR(options: CBOROptions()).encode()) })
+		return (bindingKeys, publicCoseKeys.map { Data($0.toCBOR(options: CBOROptions()).encode()) })
 	}
 
 	func createKeyBatchWithAttestation(id: String, credentialOptions: CredentialOptions, keyOptions: KeyOptions?, nonce: String?) async throws -> BatchCreateKeyResult {
@@ -764,7 +771,7 @@ public actor OpenId4VciService {
 		}
 	}
 
-	private func refreshAuthorization(issuer: Issuer, authorized: AuthorizedRequest, configuration: CredentialConfiguration, forceRefreshToken: Bool) async throws -> AuthorizedRequest {
+	func refreshAuthorization(issuer: Issuer, authorized: AuthorizedRequest, configuration: CredentialConfiguration, forceRefreshToken: Bool) async throws -> AuthorizedRequest {
 		guard authorized.isAccessTokenExpired() || forceRefreshToken else { return authorized }
 		if let refreshTokenExpiresIn = authorized.refreshToken?.expiresIn,
 		   authorized.isRefreshTokenExpired(clock: Date.now.timeIntervalSinceReferenceDate) {
