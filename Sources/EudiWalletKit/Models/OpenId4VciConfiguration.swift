@@ -18,6 +18,7 @@ limitations under the License.
 import Foundation
 import Copyable
 import CryptoKit
+@preconcurrency import LocalAuthentication
 import JOSESwift
 import MdocDataModel18013
 import MdocSecurity18013
@@ -30,7 +31,7 @@ public struct OpenId4VciConfiguration: Sendable {
 	/// The URL of the credential issuer
 	public let credentialIssuerURL: String?
 	/// The client identifier used for OpenID4VCI flows
-	public let clientId: String
+	public let clientId: String?
 	/// Configuration for key attestation, if supported by the issuer
 	public let keyAttestationsConfig: KeyAttestationConfiguration?
 	/// The redirect URI used after authorization flow completion
@@ -39,6 +40,8 @@ public struct OpenId4VciConfiguration: Sendable {
 	public let authorizeIssuanceConfig: AuthorizeIssuanceConfig
 	/// Whether to use Pushed Authorization Request (PAR) for enhanced security
 	public let parUsage: ParUsage
+	/// Whether to accept plain JWT proofs without key attestation; otherwise only attested proofs are accepted
+	public let allowPlainJwtProof: Bool
 	/// Whether to require DPoP (Demonstrating Proof-of-Possession)
 	public let requireDpop: Bool
 	/// Policy for handling signed issuer metadata fetched from `/.well-known/openid-credential-issuer`.
@@ -47,6 +50,12 @@ public struct OpenId4VciConfiguration: Sendable {
 	/// - `.preferSigned(issuerTrust:)`: wallet sends `Accept: application/jwt, application/json`. If the issuer returns a signed JWT, the signature is verified against the supplied trust anchor; otherwise plain JSON is accepted as a fallback.
 	/// - `.requireSigned(issuerTrust:)`: wallet sends `Accept: application/jwt`. The issuer must return a signed JWT whose signature validates against the supplied trust anchor; plain JSON responses are rejected.
 	public let issuerMetadataPolicy: IssuerMetadataPolicy
+	/// Whether to validate the WRP registration certificate (WRPRC) delivered in the issuer metadata `issuer_info`.
+	///
+	/// When enabled, the issuer WRPRC is validated by ``WrpRegistrationValidator`` using the
+	/// wallet trust configuration. Requires `issuerMetadataPolicy` to be `.requireSigned`, since WRPRC
+	/// enforcement needs a cryptographically bound issuer metadata signer to supply the WRPAC.
+	public let validateRegistrationCertificate: Bool
 	/// Whether user authentication is required for credential issuance
 	public let userAuthenticationRequired: Bool
 	/// Key options for generating DPoP keys, if DPoP is used
@@ -59,25 +68,30 @@ public struct OpenId4VciConfiguration: Sendable {
 		authFlowRedirectionURI: URL? = nil,
 		authorizeIssuanceConfig: AuthorizeIssuanceConfig = .favorScopes,
 		parUsage: ParUsage = .required(authorizationCodeDPoPBinding: true),
+		allowPlainJwtProof: Bool = false,
 		requireDpop: Bool = true,
 		issuerMetadataPolicy: IssuerMetadataPolicy = .ignoreSigned,
+		validateRegistrationCertificate: Bool = false,
 		cacheIssuerMetadata: Bool = true,
 		userAuthenticationRequired: Bool = false,
 		dpopKeyOptions: KeyOptions? = nil,
 		trustedIssuerCertificates: [x5chain]? = nil
 	) {
 		self.credentialIssuerURL = credentialIssuerURL
-		self.clientId = clientId ?? "eudiw-abca"
+		self.clientId = clientId
 		self.keyAttestationsConfig = keyAttestationsConfig
 		self.authFlowRedirectionURI = authFlowRedirectionURI ?? URL(string: "eudi-openid4ci://authorize")!
 		self.authorizeIssuanceConfig = authorizeIssuanceConfig
 		self.parUsage = parUsage
+		self.allowPlainJwtProof = allowPlainJwtProof
 		self.requireDpop = requireDpop
 		self.issuerMetadataPolicy = issuerMetadataPolicy
+		self.validateRegistrationCertificate = validateRegistrationCertificate
 		self.userAuthenticationRequired = userAuthenticationRequired
 		self.dpopKeyOptions = dpopKeyOptions
 	}
 }
+
 extension CoseEcCurve {
 	var jwsAlgorithm: JWSAlgorithm? {
 		switch self {
@@ -95,33 +109,34 @@ extension OpenId4VciConfiguration {
 	}
 
 	/// Creates a PoP constructor based on the provided parameters and configuration.
-	func makePoPConstructor(popUsage: PopUsage, privateKeyId: String?, algorithms: [JWSAlgorithm]?, keyOptions: KeyOptions?) async throws -> DPoPConstructor? {
+	func makePoPConstructor(popUsage: PopUsage, privateKeyId: String, algorithms: [JWSAlgorithm]?, keyOptions: KeyOptions?, context: ThreadSafeAuthContext) async throws -> DPoPConstructor? {
 		guard let algorithms = algorithms, !algorithms.isEmpty else { return nil }
 		let signingKeyProxy: SigningKeyProxy
 		let publicKey: SecKey
 		let jwsAlgorithm: JWSAlgorithm
 		let jwk: any JWK
-		let keyId = privateKeyId ?? UUID().uuidString
+		logger.info("Constructing POP for keyId: \(privateKeyId), usage: \(popUsage)")
 		if let keyOptions {
 			// If keyOptions is specified, use it to determine key generation parameters
 			let secureArea = SecureAreaRegistry.shared.get(name: keyOptions.secureAreaName)
 			let ecCurve = keyOptions.curve
 			let ecAlgorithm = await secureArea.defaultSigningAlgorithm(ecCurve: keyOptions.curve)
 			guard let jwsAlg = ecCurve.jwsAlgorithm, algorithms.map(\.name).contains(jwsAlg.name) else {
-				throw PresentationSession.makeError(str: "Specified algorithm \(ecCurve.SECGName) not supported by server supported algorithms \(algorithms.map(\.name))")
+				throw WalletError(description: "Specified algorithm \(ecCurve.SECGName) not supported by server supported algorithms \(algorithms.map(\.name))", code: .unsupportedAlgorithm)
 			}
 			jwsAlgorithm = jwsAlg
-			let existingKeyInfo: KeyBatchInfo? = if let privateKeyId { try? await secureArea.getKeyBatchInfo(id: privateKeyId) } else { nil }
-			let hasCompatibleExistingKey = existingKeyInfo != nil && keyOptions.secureAreaName == existingKeyInfo?.secureAreaName && keyOptions.curve == ecCurve && existingKeyInfo?.usedCounts.count == 1
-			let existingPublicKey: CoseKey? = if hasCompatibleExistingKey, let privateKeyId { try? await secureArea.getPublicKey(id: privateKeyId, index: 0, curve: ecCurve) } else { nil }
-			if hasCompatibleExistingKey, let privateKeyId, existingPublicKey == nil { try await secureArea.deleteKeyInfo(id: privateKeyId) }
-			let publicCoseKey: CoseKey =
-				if let existingPublicKey { existingPublicKey } else {
-					(try await secureArea.createKeyBatch(id: keyId, credentialOptions: CredentialOptions(credentialPolicy: .rotateUse, batchSize: 1), keyOptions: keyOptions)).first!
-				}
+			let existingKeyInfo: KeyBatchInfo? = try? await secureArea.getKeyBatchInfo(id: privateKeyId)
+			let hasCompatibleExistingKey = if let existingKeyInfo = existingKeyInfo, keyOptions == existingKeyInfo.keyOptions, keyOptions.curve == ecCurve, existingKeyInfo.usedCounts.count == 1 { true } else { false }
+			if !hasCompatibleExistingKey {
+				logger.info("Creating new key batch for id: \(privateKeyId) with curve: \(ecCurve.SECGName)")
+				try? await secureArea.deleteKeyInfo(id: privateKeyId)
+				try? await secureArea.deleteKeyBatch(id: privateKeyId, startIndex: 0, batchSize: 1)
+				_ = try await secureArea.createKeyBatch(id: privateKeyId, credentialOptions: CredentialOptions(credentialPolicy: .rotateUse, batchSize: 1), keyOptions: keyOptions)
+			}
+			let publicCoseKey = try await secureArea.getPublicKey(id: privateKeyId, index: 0, curve: ecCurve)
 			let publicKeyJwk = try publicCoseKey.jwk
-			let unlockData = try await secureArea.unlockKey(id: keyId)
-			let signer = try SecureAreaSigner(secureArea: secureArea, id: keyId, index: 0, publicKey: publicKeyJwk.toJoseSwiftJWK(), curve: ecCurve, ecAlgorithm: ecAlgorithm, unlockData: unlockData)
+			let unlockData = try await secureArea.unlockKey(id: privateKeyId)
+			let signer = try SecureAreaSigner(secureArea: secureArea, id: privateKeyId, index: 0, publicKey: publicKeyJwk.toJoseSwiftJWK(), curve: ecCurve, ecAlgorithm: ecAlgorithm, unlockData: unlockData, context: context)
 			signingKeyProxy = .custom(signer)
 			publicKey = try publicCoseKey.toSecKey()
 		} else {
@@ -129,7 +144,7 @@ extension OpenId4VciConfiguration {
 			guard let algName = setCommonJwsAlgorithmNames.first else {
 				let serverAlgorithms = algorithms.map(\.name)
 				let walletAlgorithms = Self.supportedDPoPAlgorithms.map(\.name)
-				throw PresentationSession.makeError(str: "No wallet supported DPoP algorithm found in the server supported algorithms \(serverAlgorithms). Wallet supported algorithms are: \(walletAlgorithms)")
+				throw WalletError(description: "No wallet supported DPoP algorithm found in the server supported algorithms \(serverAlgorithms). Wallet supported algorithms are: \(walletAlgorithms)", code: .unsupportedAlgorithm)
 			}
 			jwsAlgorithm = JWSAlgorithm(name: algName)
 			logger.info("Signing algorithm for DPoP constructor to be used is: \(jwsAlgorithm.name)")
@@ -140,49 +155,69 @@ extension OpenId4VciConfiguration {
 				case JWSAlgorithm(.ES384).name: 384
 				case JWSAlgorithm(.ES512).name: 521
 				case JWSAlgorithm(.RS256).name: 2048
-				default: throw PresentationSession.makeError(str: "Unsupported DPoP algorithm: \(jwsAlgorithm.name)")
+				default: throw WalletError(description: "Unsupported DPoP algorithm: \(jwsAlgorithm.name)", code: .unsupportedAlgorithm)
 				}
 			let type: SecKey.KeyType =
 				switch jwsAlgorithm.name {
 				case JWSAlgorithm(.RS256).name: .rsa
 				default: .ellipticCurve
 				}
-			let privateKey: SecKey = if let privateKeyId, let pk = SecKey.getExistingKey(type: type, keyId: privateKeyId) { pk } else { try SecKey.createRandomKey(type: type, bits: bits, keyId: privateKeyId) }
+			let privateKey: SecKey = if let pk = SecKey.getExistingKey(type: type, keyId: privateKeyId) { pk } else { try SecKey.createRandomKey(type: type, bits: bits, keyId: privateKeyId) }
 			signingKeyProxy = .secKey(privateKey)
 			publicKey = try KeyController.generateECDHPublicKey(from: privateKey)
 		}
 		if jwsAlgorithm.name.starts(with: "RS") {
-			jwk = try RSAPublicKey(publicKey: publicKey, additionalParameters: ["alg": jwsAlgorithm.name, "use": "sig", "kid": keyId])
+			jwk = try RSAPublicKey(publicKey: publicKey, additionalParameters: ["alg": jwsAlgorithm.name, "use": "sig", "kid": privateKeyId])
 		} else {
-			jwk = try ECPublicKey(publicKey: publicKey, additionalParameters: ["alg": jwsAlgorithm.name, "use": "sig", "kid": keyId])
+			jwk = try ECPublicKey(publicKey: publicKey, additionalParameters: ["alg": jwsAlgorithm.name, "use": "sig", "kid": privateKeyId])
 		}
 		return DPoPConstructor(algorithm: jwsAlgorithm, jwk: jwk, privateKey: signingKeyProxy)
 	}
-	
+
 	static let supportedCredentialReusePolicies: SupportedCredentialReusePolicies = .supported([.limitedTime, .onceOnly, .rotatingBatch])
 
-	func toOpenId4VCIConfig(credentialIssuerId: String, clientAttestationPopSigningAlgValuesSupported: [JWSAlgorithm]?) async throws -> OpenId4VCIConfig {
-		let client: Client =
-			if let keyAttestationsConfig, clientAttestationPopSigningAlgValuesSupported != nil {
-				try await makeAttestationClient(config: keyAttestationsConfig, credentialIssuerId: credentialIssuerId, algorithms: clientAttestationPopSigningAlgValuesSupported)
-			} else {
-				.public(id: clientId)
+	func toOpenId4VCIConfig(credentialIssuerId: String, clientAttestationPopSigningAlgValuesSupported: [JWSAlgorithm]?, registrationCertificatePolicy: RegistrationCertificatePolicy? = nil, context: ThreadSafeAuthContext) async throws -> OpenId4VCIConfig {
+		if registrationCertificatePolicy != nil {
+			// The OpenID4VCI library fails at OpenId4VCIConfig construction if not required signed
+			guard case .requireSigned = issuerMetadataPolicy else {
+				throw WalletError(description: "Registration certificate validation requires issuerMetadataPolicy to be .requireSigned", code: .invalidWrprc)
 			}
-		let clientAttestationPoPBuilder: ClientAttestationPoPBuilder? = if keyAttestationsConfig != nil { DefaultClientAttestationPoPBuilder() } else { nil }
-		return OpenId4VCIConfig(client: client, authFlowRedirectionURI: authFlowRedirectionURI, authorizeIssuanceConfig: authorizeIssuanceConfig, requirePAR: parUsage, clientAttestationPoPBuilder: clientAttestationPoPBuilder, issuerMetadataPolicy: issuerMetadataPolicy, requireDpop: requireDpop, supportedCredentialReusePolicies: Self.supportedCredentialReusePolicies)
+		}
+		let client: Client = if let keyAttestationsConfig, let clientAttestationPopSigningAlgValuesSupported {
+			try await makeAttestationClient(config: keyAttestationsConfig, credentialIssuerId: credentialIssuerId, algorithms: clientAttestationPopSigningAlgValuesSupported, context: context)
+		} else {
+			try makePublicClient()
+		}
+		let clientAttestationPoPBuilder: ClientAttestationPoPBuilder = DefaultClientAttestationPoPBuilder()
+		let jwsAlgorithms = [CoseEcCurve.P256, .P384, .P521].compactMap { $0.jwsAlgorithm }
+		let proofTypesPolicy: ProofTypesPolicy = allowPlainJwtProof ? .acceptAll(supportedAlgorithms: jwsAlgorithms) : .haipCompliant(algorithms: jwsAlgorithms)
+		return OpenId4VCIConfig(client: client, authFlowRedirectionURI: authFlowRedirectionURI, authorizeIssuanceConfig: authorizeIssuanceConfig, requirePAR: parUsage, clientAttestationPoPBuilder: clientAttestationPoPBuilder, issuerMetadataPolicy: issuerMetadataPolicy, proofTypesPolicy: proofTypesPolicy, requireDpop: requireDpop, supportedCredentialReusePolicies: Self.supportedCredentialReusePolicies, registrationCertificatePolicy: registrationCertificatePolicy)
 	}
 
-	private func makeAttestationClient(config: KeyAttestationConfiguration, credentialIssuerId: String, algorithms: [JWSAlgorithm]?) async throws -> Client {
-		let keyId = generatePopKeyId(credentialIssuerId: credentialIssuerId)
-		guard let popConstructor = try await makePoPConstructor(popUsage: .clientAttestation, privateKeyId: keyId, algorithms: algorithms, keyOptions: config.popKeyOptions) else {
-			throw PresentationSession.makeError(str: "Failed to create DPoP constructor for client attestation")
+	private func makePublicClient() throws -> Client {
+		guard let clientId else {
+			throw WalletError(description: "clientId must be set when client attestation is unavailable or not configured", code: .internalError)
 		}
-		let attestation = try await config.walletAttestationsProvider.getWalletAttestation(signingKey: popConstructor.privateKey)
+		return .public(id: clientId)
+	}
+
+	private func makeAttestationClient(config: KeyAttestationConfiguration, credentialIssuerId: String, algorithms: [JWSAlgorithm]?, context: ThreadSafeAuthContext) async throws -> Client {
+		let keyId = Self.generatePopKeyId(popUsage: .clientAttestation, credentialIssuerId: credentialIssuerId)
+		guard let popConstructor = try await makePoPConstructor(popUsage: .clientAttestation, privateKeyId: keyId, algorithms: algorithms, keyOptions: config.popKeyOptions, context: context) else {
+			throw WalletError(description: "Failed to create DPoP constructor for client attestation", code: .internalError)
+		}
+		let signingKey = popConstructor.privateKey
+		let attestationsProvider = config.walletAttestationsProvider
 		guard let signatureAlgorithm = SignatureAlgorithm(rawValue: popConstructor.algorithm.name) else {
-			throw PresentationSession.makeError(str: "Unsupported DPoP algorithm: \(popConstructor.algorithm.name) for client attestation")
+			throw WalletError(description: "Unsupported DPoP algorithm: \(popConstructor.algorithm.name) for client attestation", code: .unsupportedAlgorithm)
 		}
-		let popJwtSpec = try ClientAttestationPoPJWTSpec(signingAlgorithm: signatureAlgorithm, duration: config.popKeyDuration ?? 300.0, typ: "oauth-client-attestation-pop+jwt", signingKey: popConstructor.privateKey)
-		let client: Client = .attested(attestationJWT: try .init(jws: .init(compactSerialization: attestation)), popJwtSpec: popJwtSpec)
+		let popJwtSpec = try ClientAttestationPoPJWTSpec(signingAlgorithm: signatureAlgorithm, duration: config.popKeyDuration ?? 300.0, typ: "oauth-client-attestation-pop+jwt")
+		let attestation = try await attestationsProvider.getWalletAttestation(signingKey: signingKey)
+		let attestationJWT = try ClientAttestationJWT(jws: JWS(compactSerialization: attestation))
+		let resolvedClientId = try clientId ?? attestationJWT.decodeAsClientAttestationClaims().subject.value
+		let client: Client = .attested(id: resolvedClientId, alg: popConstructor.algorithm, jwk: popConstructor.jwk, popJwtSpec: popJwtSpec, clientAttestationProvider: { _ in
+			return (attestationJWT, signingKey)
+		})
 		return client
 	}
 
@@ -197,11 +232,12 @@ extension OpenId4VciConfiguration {
 	///
 	/// - Parameter credentialIssuerId: The credential issuer identifier to hash
 	/// - Returns: A deterministic, stable key alias for the given issuer
-	private func generatePopKeyId(credentialIssuerId: String) -> String {
+	static func generatePopKeyId(popUsage: PopUsage, credentialIssuerId: String) -> String {
 		// Create a hash of the issuer ID to get a stable, URL-safe identifier
 		let data = Data(credentialIssuerId.utf8)
 		let hash = SHA256.hash(data: data)
 		let hashHex = hash.map { String(format: "%02x", $0) }.joined().prefix(16)
-		return "client-attestation-\(hashHex)"
+		let prefix = switch popUsage { case .clientAttestation: "client-attestation-"; case .dpop: "dpop-" }
+		return "\(prefix)\(hashHex)"
 	}
 }

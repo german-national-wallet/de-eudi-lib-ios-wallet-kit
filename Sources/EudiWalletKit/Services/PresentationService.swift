@@ -34,16 +34,23 @@ public protocol PresentationService: Sendable {
 	/// Receive request.
 	func receiveRequest() async throws -> [UserRequestInfo]
 
-	var transactionLog: TransactionLog { get }
-	
-	var  zkpDocumentIds: [Document.ID]? { get }
+	var transactionLog: TransactionEntry { get set }
+	var transactionLogger: (any TransactionLogger)? { get set }
 
+	var zkpDocumentIds: [Document.ID]? { get }
+	/// The verifier (relying party) registration policy decoded from the WRPRC carried in the request, if any
+	var wrpVerifierPolicy: WrpRegistrationPolicy?  { get }
+	/// Warnings produced during WRPRC validation, keyed by credential query identifier; the empty key holds request-wide warnings
+	var wrpVerifierWarnings: [String: [PresentationPolicyViolation]]? { get }
 	/// Send response to verifier
 	/// - Parameters:
 	///   - userAccepted: True if user accepted to send the response
 	///   - itemsToSend: The selected items to send organized in document types and namespaces (see ``RequestItems``)
-	func sendResponse(userAccepted: Bool, itemsToSend: RequestItems, onSuccess: ( @Sendable (URL?) -> Void)?) async throws
-	
+	///   - deviceNameSpacesToSend: Optional device-signed namespaces to include in the response
+	///   - authenticationContext: Local authentication context reused for the device-key operations (signature / key-agreement)
+	///   - onSuccess: Callback invoked on successful response with an optional redirect URL
+	func sendResponse(userAccepted: Bool, itemsToSend: RequestItems, deviceNameSpacesToSend: RequestDeviceNameSpaces?, authenticationContext: ThreadSafeAuthContext, onSuccess: ( @Sendable (URL?) -> Void)?) async throws
+
 	/// wait for disconnect
 	func waitForDisconnect() async throws
 }
@@ -54,3 +61,11 @@ public protocol NetworkingProtocol: Sendable {
 }
 
 extension URLSession: NetworkingProtocol {}
+
+
+extension PresentationService {
+	func persistTransactionLog() async {
+		do { try await transactionLogger?.log(transaction: transactionLog) }
+		catch { logger.error("Failed to log transaction: \(error)") }
+	}
+}

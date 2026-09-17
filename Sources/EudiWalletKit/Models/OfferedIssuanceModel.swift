@@ -24,11 +24,14 @@ import Copyable
 /// This information is returned from ``EudiWallet/resolveOfferUrlDocTypes(uriOffer:)``
 public struct OfferedIssuanceModel: Sendable {
 	/// public initializer
-	public init(issuerName: String, issuerLogoUrl: String? = nil, docModels: [OfferedDocModel], txCodeSpec: TxCode? = nil) {
+	public init(issuerName: String, issuerLogoUrl: String? = nil, docModels: [OfferedDocModel], grants: Grants? = nil, txCodeSpec: TxCode? = nil, wrpVciRegistrationPolicy: WrpRegistrationPolicy? = nil, wrpVciWarnings: [String: [RegistrationPolicyViolation]]? = nil) {
 		self.issuerName = issuerName
 		self.issuerLogoUrl = issuerLogoUrl
 		self.docModels = docModels
+		self.grants = grants
 		self.txCodeSpec = txCodeSpec
+		self.wrpVciRegistrationPolicy = wrpVciRegistrationPolicy
+		self.wrpVciWarnings = wrpVciWarnings
 	}
 	/// Issuer name
 	public let issuerName: String
@@ -36,10 +39,16 @@ public struct OfferedIssuanceModel: Sendable {
 	public let issuerLogoUrl: String?
 	/// Document types included in the offer
 	public let docModels: [OfferedDocModel]
+	/// Grants included in the offer
+	public let grants: Grants?
 	/// Transaction code specification (in case of preauthorized flow)
 	public let txCodeSpec: TxCode?
 	/// Helper var for transaction code requirement
 	public var isTxCodeRequired: Bool { txCodeSpec != nil }
+	/// WRP VCI registration policy (if any) decoded from the WRPRC during validation
+	public let wrpVciRegistrationPolicy: WrpRegistrationPolicy?
+	/// Warnings collected during validation, keyed by credential configuration identifier; the empty key holds request-wide warnings.
+	public let wrpVciWarnings: [String: [RegistrationPolicyViolation]]?
 }
 
 /// Information about an offered document to issue

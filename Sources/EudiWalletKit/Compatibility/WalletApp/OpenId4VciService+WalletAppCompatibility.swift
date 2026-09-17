@@ -25,7 +25,7 @@ extension OpenId4VciService {
 
 		let (credentialConfigurations, offer) = try await buildCredentialOffer(for: [docTypeIdentifier])
 		guard let configuration = credentialConfigurations.first else {
-			throw PresentationSession.makeError(str: "Invalid credential configuration for \(docTypeIdentifier.docType ?? docTypeIdentifier.vct ?? "")")
+			throw WalletError(description: "Invalid credential configuration for \(docTypeIdentifier.docType ?? docTypeIdentifier.vct ?? "")", code: .unsupportedCredentialConfiguration)
 		}
 
 		let issuer = try await getIssuerForWalletAppCompatibility(offer: offer, useDpop: false)
@@ -57,23 +57,23 @@ extension OpenId4VciService {
 
 	func resumePendingIssuanceDocuments(pendingDoc: WalletStorage.Document, authorizationCode: String, nonce: String?, docTypeIdentifiers: [DocTypeIdentifier], credentialOptions: CredentialOptions, keyOptions: KeyOptions? = nil, promptMessage: String? = nil) async throws -> [WalletStorage.Document] {
 		guard pendingDoc.status == .pending else {
-			throw PresentationSession.makeError(str: "Invalid document status for pending issuance: \(pendingDoc.status)")
+			throw WalletError(description: "Invalid document status for pending issuance: \(pendingDoc.status)", code: .issuanceRequestFailed)
 		}
 
 		let model = try JSONDecoder().decode(PendingIssuanceModel.self, from: pendingDoc.data)
 		guard case .presentation_request_url = model.pendingReason else {
-			throw WalletError(description: "Unknown pending reason: \(model.pendingReason)")
+			throw WalletError(description: "Unknown pending reason: \(model.pendingReason)", code: .issuanceRequestFailed)
 		}
 		if Self.credentialOfferCache[model.metadataKey] == nil, let cachedOffer = Self.credentialOfferCache.values.first {
 			Self.credentialOfferCache[model.metadataKey] = cachedOffer
 		}
 		guard let offer = Self.credentialOfferCache[model.metadataKey] else {
-			throw WalletError(description: "Pending issuance cannot be completed")
+			throw WalletError(description: "Pending issuance cannot be completed", code: .issuanceRequestFailed)
 		}
 
 		let (credentialIssuerIdentifier, metadata) = try await resolveIssuerMetadata()
 		guard let authorizationServer = metadata.authorizationServers?.first else {
-			throw PresentationSession.makeError(str: "Invalid authorization server - no authorization server found")
+			throw WalletError(description: "Invalid authorization server - no authorization server found", code: .authorizationFailed)
 		}
 
 		let authServerMetadata = await AuthorizationServerMetadataResolver(
@@ -101,6 +101,10 @@ extension OpenId4VciService {
 		let networking = self.networking
 		let storage = self.storage
 		let storageService = self.storageService
+		let trustConfig = self.trustConfig
+		// Reuse this service's authentication context in the per-document services below, so a
+		// batch issuance prompts the user for authentication once rather than once per document.
+		let localAuthenticationContext = self.localAuthenticationContext
 
 		let docTypes = credentialConfigurations.map {
 			OfferedDocModel(
@@ -138,8 +142,7 @@ extension OpenId4VciService {
 		let issuerName = offer.credentialIssuerMetadata.display.map(\.displayMetadata).getName(uiCulture) ?? offer.credentialIssuerIdentifier.url.host ?? offer.credentialIssuerIdentifier.url.absoluteString
 		let issuerIdentifier = offer.credentialIssuerIdentifier.url.absoluteString
 		let issuerLogoUrl = offer.credentialIssuerMetadata.display.map(\.displayMetadata).getLogo(uiCulture)?.uri?.absoluteString
-		let tokenDpopKeyId = issueReq.dpopKeyId
-
+		
 		return try await withThrowingTaskGroup(of: WalletStorage.Document.self) { group in
 			for (index, docType) in docTypes.enumerated() {
 				group.addTask {
@@ -148,7 +151,9 @@ extension OpenId4VciService {
 						config: config,
 						networking: networking,
 						storage: storage,
-						storageService: storageService
+						storageService: storageService,
+						trustConfig: trustConfig,
+						localAuthenticationContext: localAuthenticationContext
 					)
 					let usedCredentialOptions = try await service.validateCredentialOptions(
 						docTypeIdentifier: docType.docTypeIdentifier!,
@@ -165,7 +170,7 @@ extension OpenId4VciService {
 						promptMessage: promptMessage
 					)
 					await service.setAdditionalOptions(docType.identifier ?? "")
-					let (bindingKeys, publicKeys) = try await service.initSecurityKeys(credentialConfigurations[index], proofSubject: issuer.config.client.id)
+					let (bindingKeys, publicKeys) = try await service.initSecurityKeys(credentialConfigurations[index], issuer: issuer.config.client.id)
 					let outcome = try await service.issueDocumentByOfferUrl(
 						issuer: issuer,
 						offer: offer,
@@ -182,7 +187,6 @@ extension OpenId4VciService {
 						format: credentialConfigurations[index].format,
 						issueReq: service.issueReq,
 						deleteId: nil,
-						dpopKeyId: tokenDpopKeyId,
 						issuerName: issuerName,
 						issuerIdentifier: issuerIdentifier,
 						issuerLogoUrl: issuerLogoUrl
@@ -206,10 +210,8 @@ extension OpenId4VciService {
 	func getCredentialsWithRefreshToken(docTypeIdentifiers: [DocTypeIdentifier], authorized: AuthorizedRequest, issuerDPopConstructorParam: IssuerDPoPConstructorParam, docIds: [String], credentialOptions: CredentialOptions?, keyOptions: KeyOptions? = nil, promptMessage: String? = nil, forceRefreshToken: Bool = false) async throws -> ([WalletStorage.Document], AuthorizedRequest) {
 		guard !docTypeIdentifiers.isEmpty else { return ([], authorized) }
 		guard docTypeIdentifiers.count == docIds.count else {
-			throw WalletError(description: "Refresh token: docTypeIdentifiers (\(docTypeIdentifiers.count)) and docIds (\(docIds.count)) count mismatch")
+			throw WalletError(description: "Refresh token: docTypeIdentifiers (\(docTypeIdentifiers.count)) and docIds (\(docIds.count)) count mismatch", code: .internalError)
 		}
-		let storedDpopKeyId = try await storageService.loadDocumentMetadata(id: docIds[0], status: .issued)?.dpopKeyId
-
 		let anchorCredentialOptions = try await validateCredentialOptions(docTypeIdentifier: docTypeIdentifiers[0], credentialOptions: credentialOptions)
 		try await prepareIssuing(
 			id: UUID().uuidString,
@@ -223,7 +225,7 @@ extension OpenId4VciService {
 
 		let (credentialIssuerIdentifier, metadata) = try await resolveIssuerMetadata()
 		guard let authorizationServer = metadata.authorizationServers?.first else {
-			throw WalletError(description: "Invalid issuer metadata")
+			throw WalletError(description: "Invalid issuer metadata", code: .issuerMetadataResolutionFailed)
 		}
 		let authServerMetadata = await AuthorizationServerMetadataResolver(
 			oidcFetcher: Fetcher<OIDCProviderMetadata>(session: networking),
@@ -251,7 +253,7 @@ extension OpenId4VciService {
 			grants: nil,
 			authorizationServerMetadata: authorizationServerMetadata
 		)
-		let issuer = try await getIssuerForWalletAppCompatibility(offer: offer, dpopKeyId: storedDpopKeyId, dpopKeyOptions: keyOptions.map { KeyOptions(curve: $0.curve, secureAreaName: $0.secureAreaName) })
+		let issuer = try await getIssuerForWalletAppCompatibility(offer: offer, dpopKeyOptions: keyOptions.map { KeyOptions(curve: $0.curve, secureAreaName: $0.secureAreaName) })
 
 		// Refresh the access token ONCE for the whole batch. The refresh_token grant keeps the original
 		// authorization scope, so the re-minted token can request every configuration in the offer.
@@ -269,6 +271,10 @@ extension OpenId4VciService {
 		let networking = self.networking
 		let storage = self.storage
 		let storageService = self.storageService
+		let trustConfig = self.trustConfig
+		// Reuse this service's authentication context in the per-document services below, so a
+		// batch issuance prompts the user for authentication once rather than once per document.
+		let localAuthenticationContext = self.localAuthenticationContext
 
 		// Loop only the credential API call per identifier, under the single refreshed authorization.
 		let documents = try await withThrowingTaskGroup(of: WalletStorage.Document.self) { group in
@@ -281,7 +287,9 @@ extension OpenId4VciService {
 						config: config,
 						networking: networking,
 						storage: storage,
-						storageService: storageService
+						storageService: storageService,
+						trustConfig: trustConfig,
+						localAuthenticationContext: localAuthenticationContext
 					)
 					let usedCredentialOptions = try await service.validateCredentialOptions(
 						docTypeIdentifier: docTypeIdentifier,
@@ -298,7 +306,7 @@ extension OpenId4VciService {
 						promptMessage: promptMessage
 					)
 					await service.setAdditionalOptions(configuration.configurationIdentifier.value)
-					let (bindingKeys, publicKeys) = try await service.initSecurityKeys(configuration, proofSubject: issuer.config.client.id)
+					let (bindingKeys, publicKeys) = try await service.initSecurityKeys(configuration, issuer: issuer.config.client.id)
 					let outcome = try await service.issueDocumentByOfferUrl(
 						issuer: issuer,
 						offer: offer,
@@ -313,8 +321,7 @@ extension OpenId4VciService {
 						docType: docTypeIdentifier.docType,
 						format: configuration.format,
 						issueReq: service.issueReq,
-						deleteId: deleteId,
-						dpopKeyId: storedDpopKeyId
+						deleteId: deleteId
 					)
 				}
 			}
@@ -328,20 +335,30 @@ extension OpenId4VciService {
 		return (documents, refreshed)
 	}
 
-	private func getIssuerForWalletAppCompatibility(offer: CredentialOffer, nonce: String? = nil, dpopKeyId: String? = nil, useDpop: Bool? = nil, dpopKeyOptions: KeyOptions? = nil) async throws -> Issuer {
+	private func getIssuerForWalletAppCompatibility(offer: CredentialOffer, nonce: String? = nil, useDpop: Bool? = nil, dpopKeyOptions: KeyOptions? = nil) async throws -> Issuer {
 		var dpopConstructor: DPoPConstructorType? = nil
 		if useDpop ?? config.requireDpop {
 			let popConstructor = try await config.makePoPConstructor(
 				popUsage: .dpop,
-				privateKeyId: dpopKeyId ?? issueReq.dpopKeyId,
+				// Scoped to the credential issuer, matching upstream's `getIssuer`. A DPoP-bound
+				// refresh token must be presented with the key it was issued against, and the
+				// issuer id is the only identifier that survives a refresh: the refresh path mints
+				// a fresh `issueReq.id` and re-saves the document under it, so anything derived
+				// from the document id changes underneath the token.
+				privateKeyId: OpenId4VciConfiguration.generatePopKeyId(
+					popUsage: .dpop,
+					credentialIssuerId: offer.credentialIssuerIdentifier.url.absoluteString
+				),
 				algorithms: offer.authorizationServerMetadata.dpopSigningAlgValuesSupported,
-				keyOptions: dpopKeyOptions ?? config.dpopKeyOptions
+				keyOptions: dpopKeyOptions ?? config.dpopKeyOptions,
+				context: localAuthenticationContext
 			)
 			dpopConstructor = await attachKeyAttestation(to: popConstructor)
 		}
 		let vciConfig = try await config.toOpenId4VCIConfig(
 			credentialIssuerId: offer.credentialIssuerIdentifier.url.absoluteString,
-			clientAttestationPopSigningAlgValuesSupported: offer.authorizationServerMetadata.clientAttestationPopSigningAlgValuesSupported
+			clientAttestationPopSigningAlgValuesSupported: offer.authorizationServerMetadata.clientAttestationPopSigningAlgValuesSupported,
+			context: localAuthenticationContext
 		)
 		_ = nonce
 		return try Issuer(

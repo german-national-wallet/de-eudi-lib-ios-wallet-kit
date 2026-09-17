@@ -65,7 +65,7 @@ The library provides the following functionality:
         - [x] DCQL
         - [x] Optional partial claim presentation for DCQL requests
 
-The library is written in Swift and is compatible with iOS 16 or higher. It requires Swift 6.2 or later. It is distributed as a Swift package and can be included in any iOS project.
+The library is written in Swift and is compatible with iOS 17 or higher. It requires Swift 6.2 or later. It is distributed as a Swift package and can be included in any iOS project.
 
 It is based on the following specifications:
 - ISO/IEC 18013-5 – Published
@@ -108,40 +108,71 @@ The [EudiWallet](https://eu-digital-identity-wallet.github.io/eudi-lib-ios-walle
 The wallet developer can customize cryptographic key operations by passing `SecureArea` instances to the wallet, otherwise the wallet-kit creates 'SecureEnclave' (default) and 'Software' secure areas. The wallet developer can specify key create options per doc-type such as curve type, secure area name, and key unlock policy.
 
 ```swift
-// Basic initialization with EudiWalletConfiguration
-let config = EudiWalletConfiguration(
-    serviceName: "my_wallet_app",
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
+// Basic initialization with EudiWalletConfiguration and TrustConfiguration
+let config = EudiWalletConfiguration(serviceName: "my_wallet_app")
+let trustConfig = TrustConfiguration(
+    trustSource: .etsi(.eudiRef),
 )
-let wallet = try! EudiWallet(eudiWalletConfig: config)
+let wallet = try! EudiWallet(eudiWalletConfig: config, trustConfig: trustConfig)
 
 // With additional configuration options
 let config = EudiWalletConfiguration(
     serviceName: "my_wallet_app",
     userAuthenticationRequired: true,
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
     deviceAuthMethod: .deviceSignature,
     uiCulture: "en",
     logFileName: "wallet.log",
-    bleTransferMode: .server,  // .server (default), .client, or .both
-    crlRevocationPolicy: .hardFail // default
+    bleTransferMode: .server  // .server (default), .client, or .both
 )
 let openId4VpConfig = OpenId4VpConfiguration(
     clientIdSchemes: [.x509SanDns, .x509Hash, .redirectUri],
-    allowPresentingPartialClaims: true,
     preferredResponseMode: .directPostJWT
 )
 let wallet = try! EudiWallet(
     eudiWalletConfig: config,
+    trustConfig: trustConfig,
     openID4VpConfig: openId4VpConfig
 )
 ```
 
-Set `allowPresentingPartialClaims` to `true` when you want OpenID4VP DCQL resolution to skip claims that are missing from an otherwise matching credential. The default value is `false`, which keeps all requested claims mandatory.
-
 Set `preferredResponseMode` to override the response mode requested by the verifier. When set to `.directPost`, the authorization response is sent as a plain POST. When set to `.directPostJWT`, the response is sent as an encrypted direct POST JWT. The response URI is always taken from the verifier's request. When `nil` (the default), the library uses the response mode specified by the verifier.
 
-Set `crlRevocationPolicy` in `EudiWalletConfiguration` to control how CRL revocation checks are enforced when validating reader certificates during presentation. The default value is `.hardFail`.
+### Trust configuration
+
+`EudiWallet` requires a `TrustConfiguration` that describes where trust anchors come from and how trust failures are handled. A single `TrustConfiguration` drives certificate-chain validation across the wallet:
+
+- **Issuer (document-signer) certificates** validated during OpenID4VCI issuance.
+- **Reader / relying-party access certificates** validated during proximity (BLE) and remote (OpenID4VP) presentation.
+- **Status list token signatures** validated when checking document revocation status.
+- **Issuer metadata signatures** (see [Configuring Issuer Metadata Policy](#configuring-issuer-metadata-policy-with-certificate-chain-trust)).
+
+A `TrustConfiguration` is built from one or more `TrustSource` values. A trust source is either ETSI LoTE (List of Trusted Entities) infrastructure, whose anchors are downloaded from LoTEs, or a static, bundled list of anchor certificates that needs no network access:
+
+```swift
+// ETSI LoTE trust source using a ready-made environment preset
+let trustSource: TrustSource = .etsi(.eudiRef)   // or .etsi(.digiTrust)
+
+// Static, bundled anchors (no LoTE download, no network)
+let staticSource: TrustSource = .staticList(
+    StaticListTrustSource(rootCertificates: [Data(name: "pidissuerca02_ut", ext: "der")!])
+)
+
+let trustConfig = TrustConfiguration(
+    trustSource: trustSource,
+    fallbackTrustSource: staticSource,   // consulted when the primary source has no context for a doc type
+    defaultPolicy: .enforce,             // .enforce (reject on failure) or .warning (log only)
+    docTypePolicies: [:],                // optional per-doc-type overrides of defaultPolicy
+    requireSignedMetadata: true,         // require signed OpenID4VCI issuer metadata
+    statusTrustPolicy: .warning,         // trust policy for status token signature validation
+    clockSkew: 60                        // allowed clock skew (seconds) for status token verification
+)
+```
+
+The `fallbackTrustSource` is optional (pass `nil` to disable it). When the primary trust source cannot evaluate a chain — for example, it has no verification context configured for the requested doc type — validation is delegated to the fallback source.
+
+Use `defaultPolicy` to control the behaviour on a trust failure: `.enforce` rejects the certificate chain, while `.warning` logs the failure but allows the operation to continue. Provide `docTypePolicies` to override the policy for specific doc types.
+
+The `statusTrustPolicy` parameter controls how the wallet handles trust failures when validating status list token signatures (used for document revocation/suspension checks). It defaults to `.enforce`, which rejects tokens whose signing certificate chain cannot be validated. Set it to `.warning` to log the trust failure but still allow the status check to succeed — useful during development or when status token issuers use certificates outside the configured trust anchors.
 
 ### OpenID4VCI Configuration
 
@@ -160,16 +191,17 @@ let issuerConfigurations: [String: OpenId4VciConfiguration] = [
     ),
     "mdl_issuer": OpenId4VciConfiguration(
         credentialIssuerURL: "https://mdl.issuer.example.com",
-    requireDpop: false,
-    issuerMetadataPolicy: .ignoreSigned
+        allowPlainJwtProof: true,
+        requireDpop: false,
+        issuerMetadataPolicy: .ignoreSigned
     )
 ]
 
-let config = EudiWalletConfiguration(
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
-)
+let config = EudiWalletConfiguration()
+let trustConfig = TrustConfiguration(trustSource: .etsi(.eudiRef), fallbackTrustSource: nil)
 let wallet = try! EudiWallet(
     eudiWalletConfig: config,
+    trustConfig: trustConfig,
     openID4VciConfigurations: issuerConfigurations
 )
 
@@ -178,6 +210,8 @@ try wallet.registerOpenId4VciServices([
     "new_issuer": OpenId4VciConfiguration(credentialIssuerURL: "https://new.issuer.com")
 ])
 ```
+
+The `allowPlainJwtProof` property controls which credential proof types the wallet accepts. It defaults to `false`, which uses the HAIP-compliant proof policy and accepts only attested proofs. Set it to `true` only when interoperability with an issuer requires plain JWT proofs without key attestation; the wallet then accepts all supported proof types using ES256, ES384, or ES512.
 
 The `requireDpop` property controls whether issuance should halt when DPoP is not available. The `issuerMetadataPolicy` property controls signed metadata handling per issuer (`.ignoreSigned` or `.requireSigned`). The `dpopKeyOptions` property allows you to specify key generation parameters for DPoP keys, including the secure area, curve type and user authentication options.
 
@@ -222,11 +256,11 @@ let config = OpenId4VciConfiguration(
     issuerMetadataPolicy: .requireSigned
 )
 
-let walletConfig = EudiWalletConfiguration(
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
-)
+let walletConfig = EudiWalletConfiguration()
+let trustConfig = TrustConfiguration(trustSource: .etsi(.eudiRef), fallbackTrustSource: nil)
 let wallet = try! EudiWallet(
     eudiWalletConfig: walletConfig,
+    trustConfig: trustConfig,
     openID4VciConfigurations: ["attested_issuer": config]
 )
 ```
@@ -359,23 +393,25 @@ let metadata = try await wallet.getIssuerMetadata(issuerName: "eudi_pid_issuer")
 // Use configuration identifier
 let credentialOptions = CredentialOptions(credentialPolicy: .oneTimeUse, batchSize: 5)
 let keyOptions = KeyOptions(secureAreaName: "SecureEnclave")
-let doc = try await userWallet.issueDocuments(
+let response = try await userWallet.issueDocuments(
   issuerName: "eudi_pid_issuer",
   docTypeIdentifiers: [.identifier("eu.europa.ec.eudi.pid_vc_sd_jwt")],
   credentialOptions: credentialOptions,
   keyOptions: keyOptions
 )
+let doc = response.documents.first
 ```
 
 For SD-JWT credentials, use the `.sdJwt` identifier:
 
 ```swift
-let doc = try await userWallet.issueDocuments(
+let response = try await userWallet.issueDocuments(
   issuerName: "eudi_pid_issuer",
   docTypeIdentifiers: [.identifier(vct: "eu.europa.ec.eudi.pid_vc_sd_jwt")],
   credentialOptions: CredentialOptions(credentialPolicy: .rotateUse, batchSize: 1),
   keyOptions: KeyOptions(secureAreaName: "SecureEnclave")
 )
+let doc = response.documents.first
 ```
 
 ### Issue multiple documents
@@ -386,7 +422,7 @@ You can issue multiple documents in a single operation using the `issueDocuments
 do {
   let credentialOptions = CredentialOptions(credentialPolicy: .rotateUse, batchSize: 1)
   let keyOptions = KeyOptions(secureAreaName: "SecureEnclave")
-  let documents = try await wallet.issueDocuments(
+  let response = try await wallet.issueDocuments(
     issuerName: "eudi_pid_issuer",
     docTypeIdentifiers: [
        .identifier("eu.europa.ec.eudi.pid_mdoc"),
@@ -395,7 +431,7 @@ do {
     credentialOptions: credentialOptions,
     keyOptions: keyOptions
   )
-  // all documents have been added to wallet storage
+  // all documents (response.documents) have been added to wallet storage
 }
 catch {
   // display error
@@ -414,11 +450,46 @@ let defaultOptions = try await wallet.getDefaultCredentialOptions(
   docTypeIdentifier: .msoMdoc(docType: EuPidModel.euPidDocType)
 )
 ```
+### Resolving Issuer Registration
+
+Use `resolveIssuerRegistration(issuerName:credentialConfigurationIds:)` to check whether an issuer is registered for a given set of credential types **before** starting an issuance flow. This avoids issuing a document only to discover afterwards that the issuer's registration certificate does not cover the requested credential type.
+
+The method returns an `IssuerResponse` with an empty `documents` array, containing the decoded `WrpRegistrationPolicy` and any `RegistrationPolicyViolation` entries.
+
+```swift
+let result = try await wallet.resolveIssuerRegistration(
+    issuerName: "eudi_pid_issuer",
+    credentialConfigurationIds: ["eu.europa.ec.eudi.pid_mdoc"]
+)
+if let policy = result.wrpIssuerPolicy {
+    // Show issuer info: policy.name, policy.country
+}
+if let warnings = result.wrpIssuerWarnings, !warnings.isEmpty {
+    for (configId, violations) in warnings {
+        for violation in violations {
+            switch violation.reason {
+            case .credentialsNotCovered(let ids):
+                // issuer is not registered for credential config ids
+                break
+            case .expired:
+                // registration certificate has expired
+                break
+            default: break
+            }
+        }
+    }
+}
+```
+
 ### Resolving Credential offer
 
 The library provides the `resolveOfferUrlDocTypes(offerUri:authFlowRedirectionURI:)` method that resolves the credential offer URI.
-The method returns the resolved `OfferedIssuanceModel` object that contains the offer's data (offered document types, issuer name and transaction code specification for pre-authorized flow). The offer's data can be displayed to the
-user.
+The method returns the resolved `OfferedIssuanceModel` object that contains the offer's data (offered document types, issuer name and transaction code specification for pre-authorized flow). When registration certificate validation is enabled (`OpenId4VciConfiguration.validateRegistrationCertificate`), the model also includes:
+
+- `wrpVciRegistrationPolicy: WrpRegistrationPolicy?` — the parsed issuer registration policy decoded from the WRPRC.
+- `wrpVciWarnings: [String: [RegistrationPolicyViolation]]?` — validation warnings keyed by credential configuration identifier; the empty key holds request-wide warnings. `nil` when validation is not enabled.
+
+The offer's data can be displayed to the user, including issuer registration information and any warnings, before proceeding to issuance.
 
 When a pre-registered issuer can be resolved from `offerUri`, the method uses that issuer's `OpenId4VciConfiguration.issuerMetadataPolicy`.
 
@@ -461,40 +532,37 @@ let newDocs = try await wallet.issueDocumentsByOfferUrl(
 
 #### Configuring Issuer Metadata Policy with Certificate Chain Trust
 
-When you need strict validation of issuer metadata signatures using certificate chains (such as IACA root certificates), you can configure the issuer's `OpenId4VciConfiguration` with a signed metadata policy and certificate chain trust validator:
+The `TrustConfiguration` derives an `IssuerMetadataPolicy` for you from its `requireSignedMetadata` flag, validating the issuer metadata signing chain against the configured trust anchors. When `requireSignedMetadata` is `true`, `trustConfig.issuerMetadataPolicy` yields a `.requireSigned` policy backed by the trust configuration; when it is `false`, it yields `.ignoreSigned`.
 
 ```swift
-// Create a certificate chain trust validator with IACA root certificates
-let trust: CertificateChainTrust = TrustedChainValidator(iacaRoots: [eudic])
-
-// Create an issuer metadata policy that requires signed metadata
-let issuerMetadataPolicy: IssuerMetadataPolicy = .requireSigned(
-  issuerTrust: .byCertificateChain(certificateChainTrust: trust)
+// Require signed issuer metadata, validated against the trust configuration's anchors
+let trustConfig = TrustConfiguration(
+  trustSource: .etsi(.eudiRef),
+  fallbackTrustSource: nil,
+  requireSignedMetadata: true
 )
 
-// Configure the issuer with the strict signed metadata policy
+// Apply the derived policy to a specific issuer
 let config = OpenId4VciConfiguration(
   credentialIssuerURL: "https://issuer.example.com",
   clientId: "my-wallet",
-  issuerMetadataPolicy: issuerMetadataPolicy
+  issuerMetadataPolicy: trustConfig.issuerMetadataPolicy
 )
 
-// Use this configuration when initializing the wallet
-let walletConfig = EudiWalletConfiguration(
-  trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!]
-)
+let walletConfig = EudiWalletConfiguration()
 let wallet = try EudiWallet(
   eudiWalletConfig: walletConfig,
+  trustConfig: trustConfig,
   openID4VciConfigurations: ["trusted_issuer": config]
 )
 ```
 
 The `IssuerMetadataPolicy` enum provides three validation strategies:
-- `.ignoreSigned`: Accept issuer metadata regardless of signature status (default)
+- `.ignoreSigned`: Accept issuer metadata regardless of signature status
 - `.preferSigned(issuerTrust:)`: Prefer signed metadata if available, fall back to unsigned
 - `.requireSigned(issuerTrust:)`: Strictly require signed metadata, reject unsigned metadata
 
-When using `.requireSigned`, the issuer's metadata signature must be valid against one of the IACA root certificates provided to the trust validator.
+When using `.requireSigned`, the issuer's metadata signature must validate against the trust anchors configured in the `TrustConfiguration`. You can also supply any of these strategies directly on a per-issuer `OpenId4VciConfiguration.issuerMetadataPolicy` to override the derived default.
 
 ### Authorization code flow
 
@@ -522,7 +590,7 @@ Wallet kit supports the Dynamic [PID based issuance](https://github.com/eu-digit
 After calling `issueDocument(issuerName:docTypeIdentifier:credentialOptions:keyOptions:)`, `issueDocuments(issuerName:docTypeIdentifiers:credentialOptions:keyOptions:)`, or `issueDocumentsByOfferUrl(offerUri:docTypes:txCodeValue:configuration:)` the wallet application need to check if the doc is pending and has an `authorizePresentationUrl` property. If the property is present, the application should perform the OpenID4VP presentation using the presentation URL. On success, the `resumePendingIssuance(issuerName:pendingDoc:webUrl:credentialOptions:keyOptions:)` method should be called with the authorization URL provided by the server.
 
 ```swift
-if let urlString = newDocs.last?.authorizePresentationUrl { 
+if let urlString = newDocs.documents.last?.authorizePresentationUrl { 
 	// perform openid4vp presentation using the urlString 
 	// on success call resumePendingIssuance using the authorization url
 	let resumedDoc = try await wallet.resumePendingIssuance(
@@ -565,10 +633,10 @@ Set it in `EudiWalletConfiguration` at initialization time, or update it on the 
 ```swift
 // Configure BLE transfer mode
 let config = EudiWalletConfiguration(
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
     bleTransferMode: .server  // default
 )
-let wallet = try! EudiWallet(eudiWalletConfig: config)
+let trustConfig = TrustConfiguration(trustSource: .etsi(.eudiRef), fallbackTrustSource: nil)
+let wallet = try! EudiWallet(eudiWalletConfig: config, trustConfig: trustConfig)
 wallet.bleTransferMode = .client
 ```
 
@@ -586,7 +654,7 @@ On view appearance the attestations are presented with the receiveRequest method
 	 _ = await presentationSession.receiveRequest()
 }
 ```
-After the request is received the ``presentationSession.disclosedDocumentSets`` contains an array of credential selection options. Each element is a `[DocElements]` representing one valid combination of credentials that satisfies the query. The selected state of the items can be modified via UI binding. Finally, the response is sent with the following code: 
+After the request is received the ``presentationSession.disclosedDocumentSets`` contains an array of credential selection options. Each element is a `[DocElements]` representing one valid combination of credentials that satisfies the query. The selected state of the items can be modified via UI binding. Finally, the response is sent with the following code. The optional `deviceNameSpacesToSend` parameter can be used to include device-signed namespaces in the response:
 
 ```swift
 // Use the first credential selection option (or let the user choose)
@@ -600,6 +668,71 @@ let selectedOption = presentationSession.disclosedDocumentSets.first ?? []
         // handle URL
        }
 		})
+```
+
+### Registration Certificate (WRPRC)
+
+The wallet validates the Wallet-Relying Party Registration Certificate (WRPRC) that a relying party may present with a data-sharing request, per [ETSI TS 119 475](https://www.etsi.org/standards) and Commission Implementing Regulation (EU) 2025/848 Article 8(2). The outcome is surfaced to the application so the user can be informed before sharing. During OpenID4VCI issuance the wallet can also validate the WRPRC published by the credential issuer.
+
+The WRPRC is carried as a `euWrprc` byte string in proximity requests (ETSI TS 119 472-2 §5.3.2), as a `verifier_info` element in OpenID4VP requests (§6.3.2.2), or as a `registration_cert` entry in the `issuer_info` of the signed issuer metadata (OpenID4VCI).
+
+#### Configuration
+
+Trust for WRPRC validation is configured through `TrustConfiguration`:
+
+```swift
+let trustConfig = TrustConfiguration(
+    trustSource: .etsi(.eudiRef),
+    fallbackTrustSource: nil,
+    wrprcVpTrustPolicy: .enforce,  // presentation: .enforce (default) or .warning
+    wrprcVciTrustPolicy: .enforce  // issuance: .enforce (default) or .warning
+)
+```
+
+- `.enforce` — validation failure causes the request to fail.
+- `.warning` — validation failure is added to warnings; the request continues.
+
+`wrprcVpTrustPolicy` controls the behaviour during OpenID4VP and BLE presentation. `wrprcVciTrustPolicy` controls the behaviour during OpenID4VCI issuance.
+
+For OpenID4VP, validation is controlled by `OpenId4VpConfiguration.validateRegistrationCertificate` (enabled by default) and performed by `WrpVpRegistrationValidator`. For BLE proximity requests, the validator is used internally when the request carries a WRPRC.
+
+For OpenID4VCI issuance, set `OpenId4VciConfiguration.validateRegistrationCertificate` (disabled by default) to validate the issuer WRPRC with `WrpVciRegistrationValidator`. This requires `issuerMetadataPolicy` to be `.requireSigned`, since WRPRC enforcement needs a cryptographically bound issuer metadata signer to supply the WRPAC.
+
+#### Reading the outcome — presentation
+
+After receiving a request, the result is available on `PresentationSession`:
+
+- `wrpVerifierPolicy: WrpRegistrationPolicy?` — the parsed registration (name, country, purpose, registered credentials).
+- `wrpVerifierWarnings: [String: [PresentationPolicyViolation]]?` — validation warnings keyed by credential query identifier; the empty key holds request-wide warnings, including over-asked claims.
+
+Each `DisclosedDocumentSet` in `disclosedDocumentSets` also carries per-option `warnings: [PresentationPolicyViolation]?` for policy violations specific to that credential combination.
+
+```swift
+if let registration = presentationSession.wrpVerifierPolicy {
+    // Show relying party info: registration.name, registration.country, registration.purpose
+}
+if let warnings = presentationSession.wrpVerifierWarnings?[""], !warnings.isEmpty {
+    // Warn the user about validation issues or over-asked claims
+}
+```
+
+#### Reading the outcome — issuance
+
+The `issueDocuments` and `issueDocumentsByOfferUrl` methods return an `IssuerResponse` that pairs the issued documents with the WRPRC outcome:
+
+- `documents: [WalletStorage.Document]` — the issued documents (already saved in storage).
+- `wrpIssuerPolicy: WrpRegistrationPolicy?` — the parsed issuer registration, including the attestations it is registered to provide.
+- `wrpIssuerWarnings: [String: [RegistrationPolicyViolation]]?` — warnings keyed by credential configuration identifier; the empty key holds request-wide warnings.
+- `documentWarnings` — computed property matching the warnings to each issued document by its credential configuration identifier.
+
+```swift
+let response = try await wallet.issueDocumentsByOfferUrl(offerUri: offerUri, docTypes: docTypes)
+if let issuerRegistration = response.wrpIssuerPolicy {
+    // Show issuer info: issuerRegistration.name, issuerRegistration.country
+}
+for (documentId, warnings) in response.documentWarnings {
+    // Warn the user about registration policy violations for this document
+}
 ```
 
 ## Logging

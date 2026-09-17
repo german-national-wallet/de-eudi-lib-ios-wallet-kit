@@ -22,13 +22,26 @@ dependencies: [
 The ``EudiWallet`` class provides a unified API for the two user attestation presentation flows. It is initialized with a document storage manager instance. For SwiftUI apps, the wallet instance can be added as an ``environmentObject`` to be accessible from all views. A KeyChain implementation of document storage is available.
 
 ```swift
-	let certificates = ["pidissuerca02_cz", "pidissuerca02_ee", "pidissuerca02_eu", "pidissuerca02_lu", "pidissuerca02_nl", "pidissuerca02_pt", "pidissuerca02_ut"]
-    wallet = try! EudiWallet(serviceName: "my_wallet_app", trustedReaderCertificates: certificates.map { Data(name: $0, ext: "der")! }, logFileName: "temp.txt")
-    wallet.userAuthenticationRequired = true
-    wallet.openID4VpConfig = OpenId4VpConfiguration(clientIdSchemes: [.x509SanDns, .x509Hash])
-    wallet.transactionLogger = MyFileTransactionLogger(wallet: wallet)
-	wallet.loadAllDocuments()
+let config = EudiWalletConfiguration(serviceName: "my_wallet_app", logFileName: "temp.txt")
+let trustConfig = TrustConfiguration(trustSource: .etsi(.eudiRef), fallbackTrustSource: nil)
+let wallet = try! EudiWallet(eudiWalletConfig: config, trustConfig: trustConfig)
+wallet.openID4VpConfig = OpenId4VpConfiguration(clientIdSchemes: [.x509SanDns, .x509Hash])
+wallet.transactionLogger = MyFileTransactionLogger(wallet: wallet)
+wallet.loadAllDocuments()
 ```
+
+### Transaction logging
+
+Implement `TransactionLogger.log(transaction:)` with `TransactionEntry`. Persist entries by
+`transactionIdentifier`: subsequent calls update the same transaction. A request is saved with
+`transactionResult == .notCompleted` before credential selection, and updated after successful
+response delivery. Cancellation, failures, and interrupted sessions remain `NotCompleted`.
+`reasonOfNoncompletion` records a known reason.
+
+Presentation `listOfClaimsRequested` includes the union of every DCQL credential/claim alternative,
+including unavailable credential types and all `vct_values`. When claims are omitted, known paths
+from all matching wallet credentials are included. `listOfClaimsPresented` contains the disclosed
+claim paths. Entries do not store claim values.
 
 ### BLE Transfer Mode
 
@@ -42,26 +55,28 @@ You can set it during initialization via ``EudiWalletConfiguration/bleTransferMo
 ```swift
 let config = EudiWalletConfiguration(
     serviceName: "my_wallet_app",
-    trustedReaderCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
     bleTransferMode: .server  // default; use .client or .both as needed
 )
-let wallet = try! EudiWallet(eudiWalletConfig: config)
+let trustConfig = TrustConfiguration(trustSource: .etsi(.eudiRef), fallbackTrustSource: nil)
+let wallet = try! EudiWallet(eudiWalletConfig: config, trustConfig: trustConfig)
 wallet.bleTransferMode = .client
 ```
 
-### Reader Certificate Revocation Policy
+### BLE Transport Factory
 
-Use ``EudiWalletConfiguration/crlRevocationPolicy`` to control how CRL revocation checks are enforced when validating reader certificates in BLE and OpenID4VP presentation flows.
+The ``EudiWallet/bleTransportFactory`` property lets you plug in a custom BLE transport implementation for proximity presentation. This enables alternative BLE communication channels (e.g., L2CAP or a custom BLE client mdoc transport) without modifying the library.
 
-- **`.hardFail`** (default): if revocation status cannot be confirmed (for example due to missing or unreachable CRL), validation fails.
-- **`.softFail`**: certificate validation continues when revocation status cannot be determined, but still fails when a certificate is explicitly revoked.
+A transport factory conforms to the `BleTransportFactory` protocol and provides `createServer()` and `createClient()` methods that each return an `MdocBleTransport` instance. When `nil` (the default), `DefaultBleTransportFactory` is used, which creates the standard GATT server/central transports.
 
 ```swift
+// Provide a custom factory at initialization
 let config = EudiWalletConfiguration(
-    trustedReaderRootCertificates: [Data(name: "eudi_pid_issuer_ut", ext: "der")!],
-    crlRevocationPolicy: .hardFail
+    serviceName: "my_wallet_app",
+    bleTransferMode: .server,
+    bleTransportFactory: MyCustomTransportFactory()
 )
-let wallet = try! EudiWallet(eudiWalletConfig: config)
+let trustConfig = TrustConfiguration(trustSource: .etsi(.eudiRef), fallbackTrustSource: nil)
+let wallet = try! EudiWallet(eudiWalletConfig: config, trustConfig: trustConfig)
 ```
 
 ### OpenID4VCI Configuration
@@ -73,14 +88,16 @@ The wallet now supports multiple OpenID4VCI issuer configurations for enhanced f
 let issuerConfigurations: [String: OpenId4VciConfiguration] = [
     "eudi_pid_issuer": OpenId4VciConfiguration(
         credentialIssuerURL: "https://pid.issuer.example.com",
+        keyAttestationsConfig: KeyAttestationConfiguration(walletAttestationsProvider: myWalletAttestationsProvider),
         requireDpop: true,
-        issuerMetadataPolicy: .requireSigned,
+        issuerMetadataPolicy: .requireSigned(issuerTrust: issuerTrustAnchor),
         dpopKeyOptions: KeyOptions(
             secureAreaName: "SecureEnclave", curve: .P256, accessControl: .requireUserPresence
         )
     ),
     "mdl_issuer": OpenId4VciConfiguration(
         credentialIssuerURL: "https://mdl.issuer.example.com",
+        keyAttestationsConfig: KeyAttestationConfiguration(walletAttestationsProvider: myWalletAttestationsProvider),
         requireDpop: false,
         issuerMetadataPolicy: .ignoreSigned
     )

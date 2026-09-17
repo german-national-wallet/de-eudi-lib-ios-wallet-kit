@@ -51,7 +51,7 @@ final class KeyAttestedDPoPConstructor: DPoPConstructorType {
 		}
 
 		guard let signatureAlgorithm = SignatureAlgorithm(rawValue: algorithm.name) else {
-			throw WalletError(description: "Unsupported DPoP signing algorithm: \(algorithm.name)")
+			throw WalletError(description: "Unsupported DPoP signing algorithm: \(algorithm.name)", code: .unsupportedAlgorithm)
 		}
 		let payload = Payload(try JSONSerialization.data(withJSONObject: claims))
 		let signer = try await Self.makeSigner(header: header, payload: payload, privateKey: privateKey, signatureAlgorithm: signatureAlgorithm)
@@ -62,7 +62,7 @@ final class KeyAttestedDPoPConstructor: DPoPConstructorType {
 		switch privateKey {
 		case .secKey(let secKey):
 			guard let signer = Signer(signatureAlgorithm: signatureAlgorithm, key: secKey) else {
-				throw WalletError(description: "Unable to create a DPoP JWS signer")
+				throw WalletError(description: "Unable to create a DPoP JWS signer", code: .internalError)
 			}
 			return signer
 		case .custom(let asyncSigner):

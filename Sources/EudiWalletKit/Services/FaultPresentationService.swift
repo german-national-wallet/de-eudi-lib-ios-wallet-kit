@@ -25,18 +25,21 @@ public final class FaultPresentationService: @unchecked Sendable, PresentationSe
 	public var flow: FlowType = .other
 	public var zkpDocumentIds: [Document.ID]?
 	var error: Error
-	public var transactionLog: TransactionLog
+	public var wrpVerifierPolicy: WrpRegistrationPolicy?
+	public var wrpVerifierWarnings: [String: [PresentationPolicyViolation]]?
+	public var transactionLogger: (any TransactionLogger)?
+	public var transactionLog: TransactionEntry
 
 	public init(msg: String) {
-		self.error = PresentationSession.makeError(str: msg)
-		self.transactionLog = TransactionLog(timestamp: Int64(Date.now.timeIntervalSince1970.rounded()), status: .failed, errorMessage: msg, type: .presentation, dataFormat: .cbor)
-		TransactionLogUtils.setErrorTransactionLog(type: .presentation, error: error, transactionLog: &transactionLog)
+		self.error = WalletError(description: msg, code: .internalError)
+		self.transactionLog = TransactionLogUtils.createEmptyPresentationLog()
+		TransactionLogUtils.withResult(.notCompleted, reason: error.localizedDescription, transactionLog: &transactionLog)
 	}
 
 	public init(error: Error) {
 		self.error = error
-		self.transactionLog = TransactionLog(timestamp: Int64(Date.now.timeIntervalSince1970.rounded()), status: .failed, type: .presentation, dataFormat: .cbor)
-		TransactionLogUtils.setErrorTransactionLog(type: .presentation, error: error, transactionLog: &transactionLog)
+		self.transactionLog = TransactionLogUtils.createEmptyPresentationLog()
+		TransactionLogUtils.withResult(.notCompleted, reason: error.localizedDescription, transactionLog: &transactionLog)
 	}
 
 	public func startQrEngagement(secureAreaName: String?, keyOptions: KeyOptions) async throws -> String {
@@ -47,7 +50,7 @@ public final class FaultPresentationService: @unchecked Sendable, PresentationSe
 		throw error
 	}
 
-	public func sendResponse(userAccepted: Bool, itemsToSend: RequestItems,  onSuccess: ((URL?) -> Void)?) async throws{
+	public func sendResponse(userAccepted: Bool, itemsToSend: RequestItems, deviceNameSpacesToSend: RequestDeviceNameSpaces? = nil, authenticationContext: ThreadSafeAuthContext = ThreadSafeAuthContext(), onSuccess: ((URL?) -> Void)?) async throws{
 		throw error
 	}
 
