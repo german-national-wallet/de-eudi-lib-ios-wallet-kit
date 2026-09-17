@@ -114,6 +114,7 @@ public actor OpenId4VciService {
 		let funcKeyAttestationJWT: FuncKeyAttestationJWT = { nonce in try await self.getKeyAttestationJWT(publicKeys, nonce: nonce) }
 		let bindingKey: BindingKey
 		if config.keyAttestationsConfig != nil, configuration.supportsAttestationProofType {
+//<<<<<<< HEAD
 			// Send a single `attestation` proof for the whole batch. The key attestation JWT already attests every key
 			bindingKey = .attestation(keyAttestationJWT: funcKeyAttestationJWT)
 		} else if config.keyAttestationsConfig != nil, configuration.supportsJwtProofTypeWithAttestation, let pk = publicKeys.first {
@@ -127,6 +128,23 @@ public actor OpenId4VciService {
 			throw WalletError(description: "Unsupported credential configuration", code: .unsupportedCredentialConfiguration)
 		}
 		return ([bindingKey], publicCoseKeys.map { Data($0.toCBOR(options: CBOROptions()).encode()) })
+//=======
+//			funcKeyAttestationJWT = { nonce in
+//				try await self.getKeyAttestationJWTForWalletAppCompatibility(publicKeys, nonce: nonce)
+//			}
+//		} else if config.keyAttestationsConfig != nil, configuration.supportsJwtProofTypeWithAttestation {
+//			throw PresentationSession.makeError(str: "JWT proof with attestation is not yet supported in wallet")
+//		}
+//		if funcKeyAttestationJWT != nil {
+//			return (
+//				[.attestation(keyAttestationJWT: funcKeyAttestationJWT!)],
+//				publicCoseKeys.map { Data($0.toCBOR(options: CBOROptions()).encode()) }
+//			)
+//		} else {
+//			let bindingKeys = try publicKeys.enumerated().map { try createBindingKey($0.element, secureAreaSigningAlg: selectedAlgorithm, unlockData: unlockData, index: $0.offset, funcKeyAttestationJWT: funcKeyAttestationJWT, proofSubject: proofSubject) }
+//			return (bindingKeys, publicCoseKeys.map { Data($0.toCBOR(options: CBOROptions()).encode()) })
+//		}
+//>>>>>>> main
 	}
 
 	func createKeyBatchWithAttestation(id: String, credentialOptions: CredentialOptions, keyOptions: KeyOptions?, nonce: String?) async throws -> BatchCreateKeyResult {
@@ -784,7 +802,7 @@ public actor OpenId4VciService {
 		}
 	}
 
-	private func refreshAuthorization(issuer: Issuer, authorized: AuthorizedRequest, configuration: CredentialConfiguration, forceRefreshToken: Bool) async throws -> AuthorizedRequest {
+	func refreshAuthorization(issuer: Issuer, authorized: AuthorizedRequest, configuration: CredentialConfiguration, forceRefreshToken: Bool) async throws -> AuthorizedRequest {
 		guard authorized.isAccessTokenExpired() || forceRefreshToken else { return authorized }
 		if let refreshTokenExpiresIn = authorized.refreshToken?.expiresIn,
 		   authorized.isRefreshTokenExpired(clock: Date.now.timeIntervalSinceReferenceDate) {
