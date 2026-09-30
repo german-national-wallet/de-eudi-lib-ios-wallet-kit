@@ -47,6 +47,18 @@ When key attestation is supported, the fork returns an `.attestation(...)` bindi
 
 The Wallet App expects attestation-based proof handling for supported issuers, rather than the default upstream JWT binding-key behavior.
 
+### WRPRC `srv_description` decoding (temporary)
+
+Modified `Sources/EudiWalletKit/Models/WrpRegistrationPolicy.swift`.
+
+`srvDescription` is decoded as `[[PolicyPurpose]]?` (an array of arrays) instead of `[PolicyPurpose]?`.
+
+**Why we need this:**
+
+ETSI TS 119 475 Annex B.2.1 defines `serviceDescription` as an array of `MultiLangString` arrays. Registrar-issued WRPRCs follow that shape, and with the upstream flat type the whole registration policy fails to decode, so over-asking can't be checked.
+
+**Remove when:** upstream (Niscy) ships the same fix; then take the upstream version on the next sync.
+
 ## Summary
 
 The fork does not broadly change the wallet-kit architecture.  
