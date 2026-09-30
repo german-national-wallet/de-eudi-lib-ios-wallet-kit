@@ -164,7 +164,7 @@ enum TransactionLogUtils {
 
 	/// Combines the WRPRC purpose and service-description claims for the TS10 purpose field.
 	static func transactionPurposes(_ policy: WrpRegistrationPolicy) -> [MultiLangString]? {
-		let purposes = (policy.purpose ?? []) + (policy.srvDescription ?? [])
+		let purposes = (policy.purpose ?? []) + (policy.srvDescription ?? []).flatMap { $0 }
 		return purposes.isEmpty ? nil : purposes.map { .init(lang: $0.lang, content: $0.value) }
 	}
 
