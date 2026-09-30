@@ -27,7 +27,9 @@ public struct WrpRegistrationPolicy: Decodable, Sendable {
 	public let purpose: [PolicyPurpose]?
 	public let registryURI: String?
 	public let certificatePolicy: String?
-	public let srvDescription: [PolicyPurpose]?
+	/// Localized descriptions of the services provided by the WRP: one entry per service, each an array of
+	/// language variants (ETSI TS 119 475, Annex B.2.1 `serviceDescription`, "array of arrays").
+	public let srvDescription: [[PolicyPurpose]]?
 	public let supportURI: String?
 	public let supervisoryAuthority: SupervisoryAuthority?
 	public let privacyPolicy: String?
@@ -47,7 +49,7 @@ public struct WrpRegistrationPolicy: Decodable, Sendable {
 		[RegistrationIdentifier(value: sub)] 
 	}
 
-	public init(entitlements: [String]? = nil, sub: String, country: String? = nil, policyID: [String]? = nil, credentials: [PolicyCredential], purpose: [PolicyPurpose]? = nil, registryURI: String? = nil, certificatePolicy: String? = nil, srvDescription: [PolicyPurpose]? = nil, supportURI: String? = nil, supervisoryAuthority: SupervisoryAuthority? = nil, privacyPolicy: String? = nil, name: String? = nil, infoURI: String? = nil, subLn: String? = nil, subGn: String? = nil, subFn: String? = nil, iat: Int? = nil, exp: Int? = nil, status: Status? = nil, intendedUseID: String? = nil, providesAttestations: [PolicyCredential]? = nil, intermediary: PolicyIntermediary? = nil) {
+	public init(entitlements: [String]? = nil, sub: String, country: String? = nil, policyID: [String]? = nil, credentials: [PolicyCredential], purpose: [PolicyPurpose]? = nil, registryURI: String? = nil, certificatePolicy: String? = nil, srvDescription: [[PolicyPurpose]]? = nil, supportURI: String? = nil, supervisoryAuthority: SupervisoryAuthority? = nil, privacyPolicy: String? = nil, name: String? = nil, infoURI: String? = nil, subLn: String? = nil, subGn: String? = nil, subFn: String? = nil, iat: Int? = nil, exp: Int? = nil, status: Status? = nil, intendedUseID: String? = nil, providesAttestations: [PolicyCredential]? = nil, intermediary: PolicyIntermediary? = nil) {
 		self.entitlements = entitlements
 		self.sub = sub
 		self.country = country
