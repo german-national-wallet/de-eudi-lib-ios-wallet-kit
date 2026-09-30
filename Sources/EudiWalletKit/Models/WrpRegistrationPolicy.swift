@@ -27,6 +27,8 @@ public struct WrpRegistrationPolicy: Decodable, Sendable {
 	public let purpose: [PolicyPurpose]?
 	public let registryURI: String?
 	public let certificatePolicy: String?
+	// TODO: Temporary German fork change (see de-custom.md). Remove once upstream
+	// eu-digital-identity-wallet/eudi-lib-ios-wallet-kit (Niscy) decodes `srv_description` as an array of arrays.
 	/// Localized descriptions of the services provided by the WRP: one entry per service, each an array of
 	/// language variants (ETSI TS 119 475, Annex B.2.1 `serviceDescription`, "array of arrays").
 	public let srvDescription: [[PolicyPurpose]]?
