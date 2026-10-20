@@ -735,7 +735,7 @@ public actor OpenId4VciService {
 
 	private static func submissionUseCase(_ authorized: AuthorizedRequest, issuer: Issuer, configuration: CredentialConfiguration, bindingKeys: [BindingKey], publicKeys: [Data], logger: Logger) async throws -> IssuanceOutcome {
 		let payload: IssuanceRequestPayload = .configurationBased(credentialConfigurationIdentifier: configuration.configurationIdentifier)
-		let requestOutcome = try await issuer.requestCredential(request: authorized, bindingKeys: bindingKeys, requestPayload: payload) { Issuer.createResponseEncryptionSpec($0) }
+		let requestOutcome = try await issuer.requestCredential(request: authorized, bindingKeys: bindingKeys, requestPayload: payload)
 		switch requestOutcome {
 		case .success(let response):
 			if let result = response.credentialResponses.first {
@@ -939,7 +939,7 @@ public actor OpenId4VciService {
 		let isResponseEncryptionSupported = if case .notSupported = await issuer.issuerMetadata.credentialResponseEncryption { false } else { true }
 		if let derKeyData, isResponseEncryptionSupported {
 			encyptionSpec = makeRequestEncryptionSpec(derKeyData: derKeyData, algorithm: JWSAlgorithm.AlgorithmType.ES256)
-			deferredResponseEncryptionSpec = await Issuer.createResponseEncryptionSpec(issuer.issuerMetadata.credentialResponseEncryption, privateKeyData: derKeyData)
+			deferredResponseEncryptionSpec = issuer.responseEncryptionSpec(privateKeyData: derKeyData)
 			await issuer.setDeferredResponseEncryptionSpec(deferredResponseEncryptionSpec)
 		}
 		let deferredIssuanceRequester = await IssuanceRequester(issuerMetadata: issuer.issuerMetadata, poster: Poster(session: networking), dpopConstructor: dpopConstructor)
