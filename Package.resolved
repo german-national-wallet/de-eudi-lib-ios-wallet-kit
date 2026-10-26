@@ -1,5 +1,5 @@
 {
-  "originHash" : "2518330896c98aa51573079ead36f9bf235dfb2563c813136d59b477d75ddb2c",
+  "originHash" : "588c1c858ac1ff5329c3ca93b1792d19ee2a986baf482e7340ab9c6315a076dc",
   "pins" : [
     {
       "identity" : "cryptoswift",
@@ -42,7 +42,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sandor-gazdag-eudi/eudi-lib-ios-openid4vci-swift.git",
       "state" : {
-        "revision" : "3e3ca7737a731903fdff90b5717d4d3b5312fe42"
+        "revision" : "d3f8c335c5983d2f646bb60fc1b3502e90788cab"
       }
     },
     {
