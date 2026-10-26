@@ -17,7 +17,10 @@ let package = Package(
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-wallet-storage.git", exact: "0.26.2"),
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-sdjwt-swift.git", exact: "0.14.7"),
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-openid4vp-swift.git", exact: "0.43.3"),
-		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-openid4vci-swift.git", exact: "0.55.5"),
+		.package(
+			url: "https://github.com/sandor-gazdag-eudi/eudi-lib-ios-openid4vci-swift.git",
+			revision: "3e3ca7737a731903fdff90b5717d4d3b5312fe42"
+		),
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-statium-swift.git", exact: "0.6.0"),
     	.package(url: "https://github.com/apple/swift-docc-plugin", from: "1.5.0"),
 	],
