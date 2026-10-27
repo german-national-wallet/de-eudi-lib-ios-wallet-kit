@@ -1,5 +1,5 @@
 {
-  "originHash" : "588c1c858ac1ff5329c3ca93b1792d19ee2a986baf482e7340ab9c6315a076dc",
+  "originHash" : "ebf8ab7383fc5ed86b61ae41ea2aa544fc433014e833ec10a8960d75ab3c9396",
   "pins" : [
     {
       "identity" : "cryptoswift",
@@ -40,7 +40,7 @@
     {
       "identity" : "eudi-lib-ios-openid4vci-swift",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/sandor-gazdag-eudi/eudi-lib-ios-openid4vci-swift.git",
+      "location" : "https://github.com/german-national-wallet/eudi-lib-ios-openid4vci-swift.git",
       "state" : {
         "revision" : "d3f8c335c5983d2f646bb60fc1b3502e90788cab"
       }
