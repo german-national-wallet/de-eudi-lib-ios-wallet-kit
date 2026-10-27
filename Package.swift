@@ -18,7 +18,7 @@ let package = Package(
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-sdjwt-swift.git", exact: "0.14.7"),
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-openid4vp-swift.git", exact: "0.43.3"),
 		.package(
-			url: "https://github.com/sandor-gazdag-eudi/eudi-lib-ios-openid4vci-swift.git",
+			url: "https://github.com/german-national-wallet/eudi-lib-ios-openid4vci-swift.git",
 			revision: "d3f8c335c5983d2f646bb60fc1b3502e90788cab"
 		),
 		.package(url: "https://github.com/eu-digital-identity-wallet/eudi-lib-ios-statium-swift.git", exact: "0.6.0"),
