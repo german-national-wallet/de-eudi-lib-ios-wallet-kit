@@ -121,7 +121,7 @@ extension OpenId4VciService {
 			)
 		}
 
-		let issuer = try await getIssuerForWalletAppCompatibility(offer: offer, dpopKeyOptions: keyOptions.map { KeyOptions(curve: $0.curve, secureAreaName: $0.secureAreaName) })
+		let issuer = try await getIssuerForWalletAppCompatibility(offer: offer, dpopKeyOptions: keyOptions.map { KeyOptions(curve: $0.curve, secureAreaName: $0.secureAreaName) }, dpopNonce: nonce)
 		let request = try Self.makeResumeAuthorizationRequest(model: model, authorizePresentationUrl: pendingDoc.authorizePresentationUrl, nonce: nonce)
 		let authorized = try await issuer.authorizeWithAuthorizationCode(
 			serverState: request.state,
@@ -337,22 +337,36 @@ extension OpenId4VciService {
 		)
 	}
 
-	private func getIssuerForWalletAppCompatibility(offer: CredentialOffer, useDpop: Bool? = nil, dpopKeyOptions: KeyOptions? = nil) async throws -> Issuer {
+	/// The secure area creates the refresh-token DPoP key's attestation from the authorization server's
+	/// DPoP nonce, so a new key is tagged with that nonce. Without one (the refresh path), an existing
+	/// key's stored options are reused so the key the refresh token is bound to is kept.
+	static func dpopKeyOptions(_ base: KeyOptions?, keyId: String, authorizationServerNonce: String?) async -> KeyOptions? {
+		guard var keyOptions = base else { return nil }
+		if authorizationServerNonce == nil,
+		   let stored = try? await SecureAreaRegistry.shared.get(name: keyOptions.secureAreaName).getKeyBatchInfo(id: keyId).keyOptions {
+			return stored
+		}
+		keyOptions.additionalOptions = try? JSONEncoder().encode(DPoPKeyCreationOptions(authorizationServerNonce: authorizationServerNonce))
+		return keyOptions
+	}
+
+	private func getIssuerForWalletAppCompatibility(offer: CredentialOffer, useDpop: Bool? = nil, dpopKeyOptions: KeyOptions? = nil, dpopNonce: String? = nil) async throws -> Issuer {
 		var dpopConstructor: DPoPConstructorType? = nil
 		if useDpop ?? config.requireDpop {
+			// Scoped to the credential issuer, matching upstream's `getIssuer`. A DPoP-bound
+			// refresh token must be presented with the key it was issued against, and the
+			// issuer id is the only identifier that survives a refresh: the refresh path mints
+			// a fresh `issueReq.id` and re-saves the document under it, so anything derived
+			// from the document id changes underneath the token.
+			let privateKeyId = OpenId4VciConfiguration.generatePopKeyId(
+				popUsage: .dpop,
+				credentialIssuerId: offer.credentialIssuerIdentifier.url.absoluteString
+			)
 			let popConstructor = try await config.makePoPConstructor(
 				popUsage: .dpop,
-				// Scoped to the credential issuer, matching upstream's `getIssuer`. A DPoP-bound
-				// refresh token must be presented with the key it was issued against, and the
-				// issuer id is the only identifier that survives a refresh: the refresh path mints
-				// a fresh `issueReq.id` and re-saves the document under it, so anything derived
-				// from the document id changes underneath the token.
-				privateKeyId: OpenId4VciConfiguration.generatePopKeyId(
-					popUsage: .dpop,
-					credentialIssuerId: offer.credentialIssuerIdentifier.url.absoluteString
-				),
+				privateKeyId: privateKeyId,
 				algorithms: offer.authorizationServerMetadata.dpopSigningAlgValuesSupported,
-				keyOptions: dpopKeyOptions ?? config.dpopKeyOptions,
+				keyOptions: await Self.dpopKeyOptions(dpopKeyOptions ?? config.dpopKeyOptions, keyId: privateKeyId, authorizationServerNonce: dpopNonce),
 				context: localAuthenticationContext
 			)
 			dpopConstructor = await attachKeyAttestation(to: popConstructor)
