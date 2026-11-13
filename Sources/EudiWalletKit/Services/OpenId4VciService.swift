@@ -15,11 +15,11 @@
  */
 
 import Foundation
+import struct os.OSAllocatedUnfairLock
 import OpenID4VCI
 import JOSESwift
 import MdocDataModel18013
 import MdocSecurity18013
-import AuthenticationServices
 import Logging
 import CryptoKit
 import Security
@@ -44,8 +44,12 @@ public actor OpenId4VciService {
 	let logger: Logger
 	var config: OpenId4VciConfiguration
 	static nonisolated(unsafe) var credentialOfferCache = [String: CredentialOffer]()
-	static nonisolated(unsafe) var issuerMetadataCache = [String: (CredentialIssuerId, CredentialIssuerMetadata)]()
-	static nonisolated(unsafe) var authorizationServerMetadataCache = [String: IdentityAndAccessManagementMetadata]()
+	private struct MetadataCache: Sendable {
+		var issuers = [String: (CredentialIssuerId, CredentialIssuerMetadata)]()
+		var authorizationServers = [String: IdentityAndAccessManagementMetadata]()
+	}
+	// Static caches are shared across service actors. Keep all access under the same lock.
+	private static let metadataCache = OSAllocatedUnfairLock(initialState: MetadataCache())
 	var networking: Networking
 	var authRequested: AuthorizationRequested?
 	var keyBatchSize: Int { issueReq.credentialOptions.batchSize }
@@ -62,7 +66,6 @@ public actor OpenId4VciService {
 	public private(set) var wrpIssuerWarnings: [String: [RegistrationPolicyViolation]]?
 	/// The WRP registration policy decoded from the WRPRC during the last `getIssuer(offer:)` call, if any.
 	public private(set) var wrpIssuerPolicy: WrpRegistrationPolicy?
-	@MainActor var simpleAuthWebContext: SimpleAuthenticationPresentationContext!
 	typealias FuncKeyAttestationJWT = @Sendable (_ nonce: String?) async throws -> KeyAttestationJWT
 
 	init(uiCulture: String?, config: OpenId4VciConfiguration, networking: Networking, storage: StorageManager, storageService: any DataStorageService, trustConfig: TrustConfiguration, transactionLogger: (any TransactionLogger)? = nil, localAuthenticationContext: ThreadSafeAuthContext) throws {
@@ -214,8 +217,10 @@ public actor OpenId4VciService {
 
 	/// Clear the issuer and authorization server metadata caches
 	static func clearIssuerAndAuthorizationMetadataCache() {
-		Self.issuerMetadataCache.removeAll()
-		Self.authorizationServerMetadataCache.removeAll()
+		Self.metadataCache.withLock {
+			$0.issuers.removeAll()
+			$0.authorizationServers.removeAll()
+		}
 	}
 
 	public nonisolated func beginIssueDocument(id: String, credentialOptions: CredentialOptions, keyOptions: KeyOptions?, bDeferred: Bool = false) throws -> IssueRequest {
@@ -257,7 +262,7 @@ public actor OpenId4VciService {
 		let code: Grants.PreAuthorizedCode? = switch offer.grants {	case .preAuthorizedCode(let preAuthorizedCode): preAuthorizedCode; case .both(_, let preAuthorizedCode): preAuthorizedCode; case .authorizationCode(_), .none: nil	}
 		Self.credentialOfferCache[offerUri] = offer
 		if let authorizationServer = offer.authorizationServerMetadata.issuerURL {
-			Self.authorizationServerMetadataCache[authorizationServer.absoluteString] = offer.authorizationServerMetadata
+			Self.metadataCache.withLock { $0.authorizationServers[authorizationServer.absoluteString] = offer.authorizationServerMetadata }
 		}
 		let credentialInfo = try getCredentialOfferedModels(credentialsSupported: offer.credentialIssuerMetadata.credentialsSupported.filter { offer.credentialConfigurationIdentifiers.contains($0.key) }, batchCredentialIssuance: offer.credentialIssuerMetadata.batchCredentialIssuance)
 		let issuerName = offer.credentialIssuerMetadata.display.map(\.displayMetadata).getName(uiCulture) ?? offer.credentialIssuerIdentifier.url.host ?? offer.credentialIssuerIdentifier.url.absoluteString
@@ -501,26 +506,27 @@ public actor OpenId4VciService {
 	}
 
 	static func resolveAuthorizationServerMetadata(url: URL, networking: any Networking) async throws -> IdentityAndAccessManagementMetadata {
-		if let cachedMetadata = authorizationServerMetadataCache[url.absoluteString] {
+		if let cachedMetadata = Self.metadataCache.withLock({ $0.authorizationServers[url.absoluteString] }) {
 			return cachedMetadata
 		}
 		let resolver = AuthorizationServerMetadataResolver(oidcFetcher: Fetcher<OIDCProviderMetadata>(session: networking), oauthFetcher: Fetcher<AuthorizationServerMetadata>(session: networking))
 		let metadata = try await resolver.resolve(url: url).get()
-		authorizationServerMetadataCache[url.absoluteString] = metadata
+		Self.metadataCache.withLock { $0.authorizationServers[url.absoluteString] = metadata }
 		return metadata
 	}
 
 	func resolveIssuerMetadata() async throws -> (CredentialIssuerId, CredentialIssuerMetadata) {
+		let issuerURL = config.credentialIssuerURL!
 		// Check cache first
-		if let cachedResult = Self.issuerMetadataCache[config.credentialIssuerURL!] {
+		if let cachedResult = Self.metadataCache.withLock({ $0.issuers[issuerURL] }) {
 			return cachedResult
 		}
-		let credentialIssuerIdentifier = try CredentialIssuerId(config.credentialIssuerURL!)
+		let credentialIssuerIdentifier = try CredentialIssuerId(issuerURL)
 		let issuerMetadata = try await Self.makeMetadataResolver(networking).resolve(source: .credentialIssuer(credentialIssuerIdentifier), policy: config.issuerMetadataPolicy)
 		switch issuerMetadata {
 		case .success(let metaData):
 			let result = (credentialIssuerIdentifier, metaData)
-			Self.issuerMetadataCache[config.credentialIssuerURL!] = result
+			Self.metadataCache.withLock { $0.issuers[issuerURL] = result }
 			return result
 		case .failure(let error):
 			let errorDescription = error.localizedDescription
@@ -1052,55 +1058,20 @@ public actor OpenId4VciService {
 		}
 	}
 
-	@MainActor
 	private func loginUserAndGetAuthCode(authorizationCodeURL: URL) async throws -> AsWebOutcome {
-		#if os(iOS)
-		if let scene = UIApplication.shared.connectedScenes.first {
-			let activateState = scene.activationState
-			if activateState != .foregroundActive { try await Task.sleep(nanoseconds: 1_000_000_000) }
-		}
-		#endif
-		simpleAuthWebContext = SimpleAuthenticationPresentationContext()
-		let lock = NSLock()
-		return try await withCheckedThrowingContinuation { [redirectUrl = config.authFlowRedirectionURI.scheme!] continuation in
-			var nillableContinuation: CheckedContinuation<AsWebOutcome, Error>? = continuation
-			let authenticationSession = ASWebAuthenticationSession(url: authorizationCodeURL, callbackURLScheme: redirectUrl) { url, error in
-				lock.lock()
-				defer { lock.unlock() }
-				if let error {
-					nillableContinuation?.resume(throwing: WalletError.authRequestFailed(error: error))
-					nillableContinuation = nil
-					return
-				}
-				guard let url else {
-					nillableContinuation?.resume(throwing: WalletError(description: "Authorization response does not include a url", code: .authorizationFailed))
-					nillableContinuation = nil
-					return
-				}
-				if let schemes = Bundle.main.getURLSchemas(), schemes.first(where: { url.absoluteString.hasPrefix($0 + "://") }) != nil {
-					// dynamic issuing case
-					self.logger.info("Dynamic issuance url: \(url)")
-					nillableContinuation?.resume(returning: .presentation_request(url))
-					nillableContinuation = nil
-				} else if let code = url.getQueryStringParameter("code") {
-					self.logger.info("Authorization code: \(code)")
-					let state = url.getQueryStringParameter("state")
-					let iss = url.getQueryStringParameter("iss")
-					nillableContinuation?.resume(returning: .code(code, state: state, iss: iss))
-					nillableContinuation = nil
-				} else {
-					nillableContinuation?.resume(throwing: WalletError(description: "Authorization response does not include a code", code: .authorizationFailed))
-					nillableContinuation = nil
-				}
-			}
-			authenticationSession.presentationContextProvider = simpleAuthWebContext
-			authenticationSession.start()
-		}
-	}
-
-	final class SimpleAuthenticationPresentationContext: NSObject, ASWebAuthenticationPresentationContextProviding {
-		public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-			ASPresentationAnchor()
+		let redirectURL = try await config.authorizationFlowHandler.authorize(authorizationURL: authorizationCodeURL, redirectURI: config.authFlowRedirectionURI)
+		let isAuthorizationResponse = redirectURL.scheme?.lowercased() == config.authFlowRedirectionURI.scheme?.lowercased()
+		if !isAuthorizationResponse, let schemes = Bundle.main.getURLSchemas(), schemes.first(where: { redirectURL.absoluteString.hasPrefix($0 + "://") }) != nil {
+			// dynamic issuing case
+			self.logger.info("Dynamic issuance url: \(redirectURL)")
+			return .presentation_request(redirectURL)
+		} else if let code = redirectURL.getQueryStringParameter("code") {
+			self.logger.info("Authorization code: \(code)")
+			let state = redirectURL.getQueryStringParameter("state")
+			let iss = redirectURL.getQueryStringParameter("iss")
+			return .code(code, state: state, iss: iss)
+		} else {
+			throw WalletError(description: "Authorization response does not include a code", code: .authorizationFailed)
 		}
 	}
 
@@ -1483,19 +1454,6 @@ fileprivate extension IdentityAndAccessManagementMetadata {
 		case .oidc(let metaData): metaData.authorizationResponseIssParameterSupported ?? false
 		case .oauth(let metaData): metaData.authorizationResponseIssParameterSupported ?? false
 		}
-	}
-}
-
-extension WalletError {
-	public static func authRequestFailed(error: Error) -> WalletError {
-		if let wae = error as? ASWebAuthenticationSessionError {
-			if wae.code == .canceledLogin { return WalletError(description: "The login has been cancelled.", localizationKey: "login_cancelled", code: .userCancelledLogin, innerError: wae)  }
-			else if wae.code == .presentationContextNotProvided { return WalletError(description: "Web authentication presentation context not provided.", code: .authorizationFailed, innerError: wae) }
-			else if wae.code == .presentationContextInvalid { return WalletError(description: "Web authentication presentation context invalid.", code: .authorizationFailed, innerError: wae) }
-			else { return WalletError(description: wae.localizedDescription, code: .authorizationFailed, innerError: wae) }
-		}
-		return WalletError(description:"Authorization request failed: \(error.localizedDescription)", code: .authorizationFailed, innerError: error)
-
 	}
 }
 
