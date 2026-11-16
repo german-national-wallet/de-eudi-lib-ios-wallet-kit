@@ -69,6 +69,32 @@ public struct AuthorizedRequestParams: Sendable {
 	}
 }
 
+/// Carried in `KeyOptions.additionalOptions` when the wallet app creates its refresh-token DPoP key, so the
+/// secure area can attest the key with the authorization server's DPoP nonce instead of a credential nonce.
+public struct DPoPKeyCreationOptions: Codable, Sendable, Equatable {
+	public static let dpopPurpose = "dpop"
+
+	public let purpose: String
+	public let authorizationServerNonce: String?
+
+	enum CodingKeys: String, CodingKey {
+		case purpose
+		case authorizationServerNonce = "authorization_server_nonce"
+	}
+
+	public init(authorizationServerNonce: String?) {
+		self.purpose = Self.dpopPurpose
+		self.authorizationServerNonce = authorizationServerNonce
+	}
+
+	/// The options carried in `additionalOptions`, or `nil` when they don't describe a DPoP key.
+	public static func decode(_ additionalOptions: Data?) -> DPoPKeyCreationOptions? {
+		guard let additionalOptions, let options = try? JSONDecoder().decode(Self.self, from: additionalOptions),
+			  options.purpose == dpopPurpose else { return nil }
+		return options
+	}
+}
+
 /// Errors thrown by the refresh-token based credential re-issuance flow.
 public enum RefreshAuthorizationError: LocalizedError {
 	/// No (or empty) access token was provided; nothing to refresh from.
