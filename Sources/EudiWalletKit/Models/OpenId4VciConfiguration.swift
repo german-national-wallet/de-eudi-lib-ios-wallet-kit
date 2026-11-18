@@ -38,6 +38,12 @@ public struct OpenId4VciConfiguration: Sendable {
 	public let authFlowRedirectionURI: URL
 	/// Configuration that determines how authorization issuance should be handled
 	public let authorizeIssuanceConfig: AuthorizeIssuanceConfig
+	/// Policy for validating the authorization response `iss` parameter (RFC 9207).
+	///
+	/// - `.never` (default): skips issuer validation.
+	/// - `.ifSupported`: requires `iss` when the authorization server advertises support; any received `iss` must match its issuer.
+	/// - `.required`: additionally fails issuance if the authorization server does not advertise support.
+	public let authResponseIssChecking: AuthorizationResponseIssChecking
 	/// Whether to use Pushed Authorization Request (PAR) for enhanced security
 	public let parUsage: ParUsage
 	/// Whether to accept plain JWT proofs without key attestation; otherwise only attested proofs are accepted
@@ -69,6 +75,8 @@ public struct OpenId4VciConfiguration: Sendable {
 	public let clientAttestationPoPBuilder: (any ClientAttestationPoPBuilder)
 	/// Wallet-side configuration of credential request / response encryption.
 	public let encryptionSupportConfig: EncryptionSupportConfig
+	/// Presents the authorization URL to the user during the authorization code flow and returns the redirect.
+	public let authorizationFlowHandler: (any AuthorizationFlowHandler)
 
 	public init(
 		credentialIssuerURL: String?,
@@ -76,6 +84,7 @@ public struct OpenId4VciConfiguration: Sendable {
 		keyAttestationsConfig: KeyAttestationConfiguration? = nil,
 		authFlowRedirectionURI: URL? = nil,
 		authorizeIssuanceConfig: AuthorizeIssuanceConfig = .favorScopes,
+		authResponseIssChecking: AuthorizationResponseIssChecking = .never,
 		parUsage: ParUsage = .required(authorizationCodeDPoPBinding: true),
 		allowPlainJwtProof: Bool = false,
 		requireDpop: Bool = true,
@@ -86,13 +95,15 @@ public struct OpenId4VciConfiguration: Sendable {
 		dpopUsesClientAttestationKey: Bool = false,
 		trustedIssuerCertificates: [x5chain]? = nil,
 		clientAttestationPoPBuilder: any ClientAttestationPoPBuilder = DefaultClientAttestationPoPBuilder(),
-		encryptionSupportConfig: EncryptionSupportConfig = .init()
+		encryptionSupportConfig: EncryptionSupportConfig = .init(),
+		authorizationFlowHandler: (any AuthorizationFlowHandler)? = nil
 	) {
 		self.credentialIssuerURL = credentialIssuerURL
 		self.clientId = clientId
 		self.keyAttestationsConfig = keyAttestationsConfig
 		self.authFlowRedirectionURI = authFlowRedirectionURI ?? URL(string: "eudi-openid4ci://authorize")!
 		self.authorizeIssuanceConfig = authorizeIssuanceConfig
+		self.authResponseIssChecking = authResponseIssChecking
 		self.parUsage = parUsage
 		self.allowPlainJwtProof = allowPlainJwtProof
 		self.requireDpop = requireDpop
@@ -103,6 +114,7 @@ public struct OpenId4VciConfiguration: Sendable {
 		self.dpopUsesClientAttestationKey = dpopUsesClientAttestationKey
 		self.clientAttestationPoPBuilder = clientAttestationPoPBuilder
 		self.encryptionSupportConfig = encryptionSupportConfig
+		self.authorizationFlowHandler = authorizationFlowHandler ?? ASWebAuthenticationSessionFlowHandler()
 	}
 }
 
@@ -215,7 +227,8 @@ extension OpenId4VciConfiguration {
 			requireDpop: requireDpop,
 			supportedCredentialReusePolicies: Self.supportedCredentialReusePolicies,
 			registrationCertificatePolicy: registrationCertificatePolicy,
-			encryptionSupportConfig: encryptionSupportConfig
+			encryptionSupportConfig: encryptionSupportConfig,
+			authResponseIssChecking: authResponseIssChecking
 		)
 	}
 
