@@ -37,6 +37,7 @@ import struct MdocDataModel18013.StatusList
 public final class EudiWallet: ObservableObject, @unchecked Sendable {
 	private static let loggingBootstrapLock = NSLock()
 	nonisolated(unsafe) private static var didBootstrapLoggingSystem = false
+	nonisolated(unsafe) public static var additionalLogHandler: (@Sendable (String) -> LogHandler)?
 
 	/// Storage manager instance
 	public private(set) var storage: StorageManager!
@@ -178,8 +179,8 @@ public final class EudiWallet: ObservableObject, @unchecked Sendable {
 
 	private func initializeLogging() throws {
 		guard Self.shouldBootstrapLoggingSystem() else { return }
-		LoggingSystem.bootstrap { [logFileName = eudiWalletConfig.logFileName] label in
-			var handlers:[LogHandler] = []
+		LoggingSystem.bootstrap { [logFileName = eudiWalletConfig.logFileName, additionalLogHandler = Self.additionalLogHandler] label in
+			var handlers:[LogHandler] = additionalLogHandler.map { [$0(label)] } ?? []
 			if _isDebugAssertConfiguration() {
 				handlers.append(StreamLogHandler.standardOutput(label: label))
 			}
