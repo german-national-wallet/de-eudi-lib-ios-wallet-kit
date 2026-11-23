@@ -28,6 +28,9 @@ struct CredentialConfiguration: Codable, Sendable {
     let scope: String?
 	let supportsAttestationProofType: Bool
 	let supportsJwtProofTypeWithAttestation: Bool
+	let supportsPlainJwtProof: Bool
+	/// Kept separately for same-key JWT fallback; absent in older persisted configurations.
+	let jwtProofSigningAlgValuesSupported: [String]?
     let credentialSigningAlgValuesSupported: [String]
 	let dpopSigningAlgValuesSupported: [String]?
 	let clientAttestationPopSigningAlgValuesSupported: [String]?
@@ -46,7 +49,9 @@ struct CredentialConfiguration: Codable, Sendable {
 		scope: String? = nil,
 		supportsAttestationProofType: Bool,
 		supportsJwtProofTypeWithAttestation: Bool,
+		supportsPlainJwtProof: Bool,
 		credentialSigningAlgValuesSupported: [String],
+		jwtProofSigningAlgValuesSupported: [String]? = nil,
 		dpopSigningAlgValuesSupported: [String]?,
 		clientAttestationPopSigningAlgValuesSupported: [String]?,
 		issuerDisplay: [DisplayMetadata],
@@ -63,6 +68,8 @@ struct CredentialConfiguration: Codable, Sendable {
 		self.scope = scope
 		self.supportsAttestationProofType = supportsAttestationProofType
 		self.supportsJwtProofTypeWithAttestation = supportsJwtProofTypeWithAttestation
+		self.supportsPlainJwtProof = supportsPlainJwtProof
+		self.jwtProofSigningAlgValuesSupported = jwtProofSigningAlgValuesSupported
 		self.credentialSigningAlgValuesSupported = credentialSigningAlgValuesSupported
 		self.dpopSigningAlgValuesSupported = dpopSigningAlgValuesSupported
 		self.clientAttestationPopSigningAlgValuesSupported = clientAttestationPopSigningAlgValuesSupported

@@ -65,11 +65,11 @@ extension EudiWallet {
 	}
 
 	public func deletePopKeys(secureAreaName: String) async {
-		guard SecureAreaRegistry.shared.names.contains(secureAreaName) else {
+		guard SecureAreaRegistry.shared.names.contains(secureAreaName),
+			  let secureArea = try? SecureAreaRegistry.shared.get(name: secureAreaName) else {
 			logger.warning("Secure area \(secureAreaName) is not registered; no POP keys were deleted")
 			return
 		}
-		let secureArea = SecureAreaRegistry.shared.get(name: secureAreaName)
 		for service in OpenId4VCIServiceRegistry.shared.getAllServices() {
 			guard let credentialIssuerId = await service.config.credentialIssuerURL else { continue }
 			for popUsage in [PopUsage.dpop, .clientAttestation] {

@@ -82,6 +82,7 @@ struct ResumePendingIssuanceDPoPNonceTests {
 				vct: "urn:eudi:pid:de:1",
 				supportsAttestationProofType: true,
 				supportsJwtProofTypeWithAttestation: true,
+				supportsPlainJwtProof: false,
 				credentialSigningAlgValuesSupported: ["ES256"],
 				dpopSigningAlgValuesSupported: ["ES256"],
 				clientAttestationPopSigningAlgValuesSupported: nil,

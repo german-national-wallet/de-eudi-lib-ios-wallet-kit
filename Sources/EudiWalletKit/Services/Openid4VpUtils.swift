@@ -175,9 +175,12 @@ class OpenId4VpUtils {
 				  let allPathsDict = recreated.disclosuresPerClaimPath else { continue }
 			paths.removeAll(); values.removeAll()
 			for (p, _) in allPathsDict {
+				var node = recreated.recreatedClaims
 				let mappedElements = p.value.map { element in
-					if case .claim(let name) = element { return ClaimPathElement.claim(name: name) }
-					if case .arrayElement(let index) = element { return ClaimPathElement.arrayElement(index: index) }
+					if case .claim(let name) = element { node = node[name]; return ClaimPathElement.claim(name: name) }
+					// sd-jwt parses numeric object keys (e.g. age_equal_or_over/16) as array indices
+					if case .arrayElement(let index) = element, node.type == .dictionary { node = node["\(index)"]; return ClaimPathElement.claim(name: "\(index)") }
+					if case .arrayElement(let index) = element { node = node[index]; return ClaimPathElement.arrayElement(index: index) }
 					return ClaimPathElement.allArrayElements
 				}
 				let path = ClaimPath(mappedElements)
@@ -286,7 +289,8 @@ extension CredentialQuery {
 }
 
 extension ClaimPath {
-	public func contains2(_ that: ClaimPath) -> Bool { zip(self.value, that.value).allSatisfy { (selfElement, thatElement) in selfElement.contains(thatElement) } }
+	/// True when `that` is this path or a path below it. A longer path never contains a shorter path.
+	public func contains2(_ that: ClaimPath) -> Bool { self.value.count <= that.value.count && zip(self.value, that.value).allSatisfy { (selfElement, thatElement) in selfElement.contains(thatElement) } }
 }
 
 extension DCQL {
@@ -417,9 +421,8 @@ extension OpenId4VpUtils {
 			if requiredSetsOptions.contains(where: \.isEmpty) {
 				throw WalletError(description: "Required credential_set cannot be satisfied", code: .credentialSetNotSatisfied)
 			}
-			// Cartesian product across all required sets
-			let requiredCombinations = requiredSetsOptions.reduce([(String, CredentialSelectionSet)]()) { acc, setOptions in
-				if acc.isEmpty { return setOptions }
+			// Seed with one empty combination so optional-only sets can expand.
+			let requiredCombinations = requiredSetsOptions.reduce([("", CredentialSelectionSet())]) { acc, setOptions in
 				return acc.flatMap { (existingKey, existingSet) in
 					setOptions.map { (optKey, optSet) in
 						let combinedKey = existingKey.isEmpty ? optKey : "\(existingKey)|\(optKey)"
@@ -443,7 +446,8 @@ extension OpenId4VpUtils {
 					}
 				}
 			}
-			for (key, set) in combinations {
+			// Presentation requires at least one credential; omit the skip-all variant.
+			for (key, set) in combinations where !set.isEmpty {
 				resultDict[key] = set
 			}
 		} else {

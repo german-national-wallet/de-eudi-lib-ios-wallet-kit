@@ -287,7 +287,7 @@ extension JSON {
 		case .number:
 			if name == "sex", let isex = Int(stringValue), isex >= 0, isex <= 2 {
 				let locSexValue = NSLocalizedString(isex == 1 ? "male" : "female", comment: "")
-				return (.string(locSexValue), locSexValue)
+				return (.integer(UInt64(intValue)), locSexValue)
 			}
 			if name == JWTClaimNames.issuedAt || name == JWTClaimNames.expirationTime {
 				let date = Date(timeIntervalSince1970: TimeInterval(intValue))
@@ -298,10 +298,6 @@ extension JSON {
 		case .string:
 			if isBase64ByteClaim(name: name, value: stringValue, valueType: valueType), let d = decodeBase64ByteClaim(stringValue) {
 				return (.bytes(d.bytes), "\(d.count) bytes")
-			}
-			if name == "sex", let isex = Int(stringValue), isex >= 0, isex <= 2 {
-				let locSexValue = NSLocalizedString(isex == 1 ? "male" : "female", comment: "")
-				return (.string(locSexValue), locSexValue)
 			}
 			return (.string(stringValue), stringValue)
 		case .bool: return (.boolean(boolValue), boolValue ? "Y" : "N")
@@ -512,8 +508,9 @@ extension DocClaimsModelConfiguration {
 extension MdocDataModel18013.CoseKey {
 	var jwk: JSONWebKey.JWK {
 		get throws {
-			guard let curve = JSONWebKey.JWK.CryptographicCurve(rawValue: crv.jwkName) else {
-			throw WalletError(description: "Unsupported CoseKey curve for JWK conversion: \(crv.jwkName)", code: .unsupportedAlgorithm)
+			let curveName = try crv.jwkName
+			guard let curve = JSONWebKey.JWK.CryptographicCurve(rawValue: curveName) else {
+			throw WalletError(description: "Unsupported CoseKey curve for JWK conversion: \(curveName)", code: .unsupportedAlgorithm)
 			}
 			return JSONWebKey.JWK(keyType: .ellipticCurve, curve: curve, x: Data(x), y: Data(y))
 		}
@@ -697,4 +694,9 @@ extension RegistrationCertificatePolicy {
 	  )
 	}
 
+}
+
+/// Use the algorithms advertised for the proof that will be sent.
+func resolveProofSigningAlgorithms(proofTypesSupported: [String: ProofTypeSupportedMeta], useAttestation: Bool) -> [String] {
+	proofTypesSupported[useAttestation ? "attestation" : "jwt"]?.algorithms ?? []
 }

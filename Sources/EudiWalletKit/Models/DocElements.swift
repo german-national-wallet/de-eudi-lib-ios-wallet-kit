@@ -205,7 +205,7 @@ extension RequestItem {
 
 	public func extractMsoMdocElement(ns: String, nsItems: [IssuerSignedItem], docClaims: [DocClaim], isMandatory: Bool) -> MsoMdocElement {
 		let issuedElement = nsItems.first { $0.elementIdentifier == rootIdentifier }
-		let stringValue = issuedElement?.description
+		let stringValue = issuedElement?.displayString
 		let docClaim = docClaims.first { $0.namespace == ns && $0.name == rootIdentifier }
 		return MsoMdocElement(elementIdentifier: elementIdentifier, isOptional: !isMandatory, intentToRetain: intentToRetain ?? false, stringValue: stringValue, docClaim: docClaim, isValid: issuedElement != nil)
 	}
@@ -261,7 +261,8 @@ extension Array where Element == DocElements {
 }
 
 extension ClaimPath {
- 	public func contains2(_ that: ClaimPath) -> Bool { zip(self.value, that.value).allSatisfy { (selfElement, thatElement) in selfElement.contains(thatElement) } }
+ 	/// True when `that` is this path or a path below it. A longer path never contains a shorter path.
+ 	public func contains2(_ that: ClaimPath) -> Bool { self.value.count <= that.value.count && zip(self.value, that.value).allSatisfy { (selfElement, thatElement) in selfElement.contains(thatElement) } }
 }
 
 public final class NameSpacedElements: Identifiable, @unchecked Sendable {
