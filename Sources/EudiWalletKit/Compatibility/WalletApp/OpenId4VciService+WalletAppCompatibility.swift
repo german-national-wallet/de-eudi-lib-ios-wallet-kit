@@ -55,7 +55,7 @@ extension OpenId4VciService {
 		)
 	}
 
-	func resumePendingIssuanceDocuments(pendingDoc: WalletStorage.Document, authorizationCode: String, nonce: String?, docTypeIdentifiers: [DocTypeIdentifier], credentialOptions: CredentialOptions, keyOptions: KeyOptions? = nil, promptMessage: String? = nil) async throws -> [WalletStorage.Document] {
+	func resumePendingIssuanceDocuments(pendingDoc: WalletStorage.Document, authorizationCode: String, iss: String? = nil, nonce: String?, docTypeIdentifiers: [DocTypeIdentifier], credentialOptions: CredentialOptions, keyOptions: KeyOptions? = nil, promptMessage: String? = nil) async throws -> [WalletStorage.Document] {
 		guard pendingDoc.status == .pending else {
 			throw WalletError(description: "Invalid document status for pending issuance: \(pendingDoc.status)", code: .issuanceRequestFailed)
 		}
@@ -122,13 +122,14 @@ extension OpenId4VciService {
 		}
 
 		let issuer = try await getIssuerForWalletAppCompatibility(offer: offer, dpopKeyOptions: keyOptions.map { KeyOptions(curve: $0.curve, secureAreaName: $0.secureAreaName) }, dpopNonce: nonce)
-		let request = try Self.makeResumeAuthorizationRequest(model: model, authorizePresentationUrl: pendingDoc.authorizePresentationUrl, nonce: nonce)
+		let request = try Self.makeResumeAuthorizationRequest(model: model, authorizePresentationUrl: pendingDoc.authorizePresentationUrl, nonce: nonce, authorizationServerMetadata: offer.authorizationServerMetadata)
 		let authorized = try await issuer.authorizeWithAuthorizationCode(
 			serverState: request.state,
 			request: request,
 			authorizationCode: try AuthorizationCode(value: authorizationCode),
 			authorizationDetailsInTokenRequest: .doNotInclude,
-			grant: try offer.grants ?? .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil))
+			grant: try offer.grants ?? .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil)),
+			issuerFromRedirect: iss.flatMap(URL.init(string:))
 		)
 		let issuerName = offer.credentialIssuerMetadata.display.map(\.displayMetadata).getName(uiCulture) ?? offer.credentialIssuerIdentifier.url.host ?? offer.credentialIssuerIdentifier.url.absoluteString
 		let issuerIdentifier = offer.credentialIssuerIdentifier.url.absoluteString
@@ -326,14 +327,16 @@ extension OpenId4VciService {
 		return (documents, refreshed)
 	}
 
-	static func makeResumeAuthorizationRequest(model: PendingIssuanceModel, authorizePresentationUrl: String?, nonce: String?) throws -> AuthorizationRequested {
+	static func makeResumeAuthorizationRequest(model: PendingIssuanceModel, authorizePresentationUrl: String?, nonce: String?, authorizationServerMetadata: IdentityAndAccessManagementMetadata) throws -> AuthorizationRequested {
 		AuthorizationRequested(
 			credentials: [try .init(value: model.configuration.configurationIdentifier.value)],
 			authorizationCodeURL: try AuthorizationCodeURL(urlString: authorizePresentationUrl ?? ""),
 			pkceVerifier: try PKCEVerifier(codeVerifier: model.pckeCodeVerifier, codeVerifierMethod: model.pckeCodeVerifierMethod),
 			state: model.state,
 			configurationIds: [model.configuration.configurationIdentifier],
-			dpopNonce: nonce.map(Nonce.init(value:))
+			dpopNonce: nonce.map(Nonce.init(value:)),
+			expectedIssuer: authorizationServerMetadata.issuerURL,
+			issParameterRequired: authorizationServerMetadata.issParameterSupported
 		)
 	}
 
