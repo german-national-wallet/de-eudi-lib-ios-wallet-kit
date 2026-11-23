@@ -1552,7 +1552,7 @@ fileprivate extension URL {
 }
 
 // RFC 9207: OpenID4VCI keeps these accessors internal, so mirror them for requests the kit builds itself
-fileprivate extension IdentityAndAccessManagementMetadata {
+extension IdentityAndAccessManagementMetadata {
 	var issuerURL: URL? {
 		switch self {
 		case .oidc(let metaData): metaData.issuer.flatMap(URL.init(string:))

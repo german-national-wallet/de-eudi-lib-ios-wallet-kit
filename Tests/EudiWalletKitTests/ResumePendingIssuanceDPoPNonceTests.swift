@@ -5,7 +5,7 @@ import JOSESwift
 import MdocDataModel18013
 @testable import EudiWalletKit
 
-@Suite("Resume pending issuance DPoP nonce")
+@Suite("Resume pending issuance authorization")
 struct ResumePendingIssuanceDPoPNonceTests {
 
 	private static let tokenEndpoint = URL(string: "https://issuer.example/token")!
@@ -13,7 +13,7 @@ struct ResumePendingIssuanceDPoPNonceTests {
 
 	@Test func forwardsTheFinishAuthorizationNonceToTheFirstTokenRequest() async throws {
 		let networking = TokenEndpointStub(responses: [.success])
-		let request = try OpenId4VciService.makeResumeAuthorizationRequest(model: makePendingModel(), authorizePresentationUrl: Self.authorizeUrl, nonce: "finish-authorization-nonce")
+		let request = try OpenId4VciService.makeResumeAuthorizationRequest(model: makePendingModel(), authorizePresentationUrl: Self.authorizeUrl, nonce: "finish-authorization-nonce", authorizationServerMetadata: .oauth(Self.authorizationServerMetadata()))
 
 		_ = try await authorize(request: request, networking: networking)
 
@@ -24,7 +24,7 @@ struct ResumePendingIssuanceDPoPNonceTests {
 
 	@Test func withoutANonceTheLibraryStillRetriesWithTheServerNonce() async throws {
 		let networking = TokenEndpointStub(responses: [.useDpopNonce("server-nonce"), .success])
-		let request = try OpenId4VciService.makeResumeAuthorizationRequest(model: makePendingModel(), authorizePresentationUrl: Self.authorizeUrl, nonce: nil)
+		let request = try OpenId4VciService.makeResumeAuthorizationRequest(model: makePendingModel(), authorizePresentationUrl: Self.authorizeUrl, nonce: nil, authorizationServerMetadata: .oauth(Self.authorizationServerMetadata()))
 
 		_ = try await authorize(request: request, networking: networking)
 
@@ -34,29 +34,80 @@ struct ResumePendingIssuanceDPoPNonceTests {
 		#expect(try nonceClaim(of: proofs[1]) == "server-nonce")
 	}
 
+	@Test func resumeRequestBindsTheAuthorizationServerIssuer() throws {
+		let request = try resumeRequest(issSupported: true)
+
+		#expect(request.expectedIssuer == URL(string: "https://issuer.example"))
+		#expect(request.issParameterRequired)
+	}
+
+	@Test func acceptsAMatchingIss() async throws {
+		let request = try resumeRequest(issSupported: true)
+
+		_ = try await authorize(request: request, networking: TokenEndpointStub(responses: [.success]), iss: "https://issuer.example", issChecking: .ifSupported)
+	}
+
+	@Test func rejectsAMismatchingIss() async throws {
+		let request = try resumeRequest(issSupported: false)
+
+		await #expect {
+			_ = try await authorize(request: request, networking: TokenEndpointStub(responses: [.success]), iss: "https://attacker.example", issChecking: .ifSupported)
+		} throws: { error in
+			guard case .issMismatch = error as? ValidationError else { return false }
+			return true
+		}
+	}
+
+	@Test func rejectsAMissingIssWhenTheServerAdvertisesSupport() async throws {
+		let request = try resumeRequest(issSupported: true)
+
+		await #expect {
+			_ = try await authorize(request: request, networking: TokenEndpointStub(responses: [.success]), iss: nil, issChecking: .ifSupported)
+		} throws: { error in
+			guard case .issParameterRequiredButMissing = error as? ValidationError else { return false }
+			return true
+		}
+	}
+
+	@Test func allowsAMissingIssWhenTheServerDoesNotAdvertiseSupport() async throws {
+		let request = try resumeRequest(issSupported: false)
+
+		_ = try await authorize(request: request, networking: TokenEndpointStub(responses: [.success]), iss: nil, issChecking: .ifSupported)
+	}
+
 	private static let authorizeUrl = "https://issuer.example/authorize?client_id=wallet&request_uri=urn:example"
 
-	private func authorize(request: AuthorizationRequested, networking: TokenEndpointStub) async throws -> AuthorizedRequest {
-		let issuer = try await makeIssuer(networking: networking)
+	private static func authorizationServerMetadata(issSupported: Bool? = nil) -> AuthorizationServerMetadata {
+		AuthorizationServerMetadata(
+			issuer: "https://issuer.example",
+			authorizationEndpoint: "https://issuer.example/authorize",
+			tokenEndpoint: tokenEndpoint.absoluteString,
+			dpopSigningAlgValuesSupported: [JWSAlgorithm(.ES256)],
+			authorizationResponseIssParameterSupported: issSupported
+		)
+	}
+
+	private func resumeRequest(issSupported: Bool) throws -> AuthorizationRequested {
+		try OpenId4VciService.makeResumeAuthorizationRequest(model: makePendingModel(), authorizePresentationUrl: Self.authorizeUrl, nonce: nil, authorizationServerMetadata: .oauth(Self.authorizationServerMetadata(issSupported: issSupported)))
+	}
+
+	private func authorize(request: AuthorizationRequested, networking: TokenEndpointStub, iss: String? = nil, issChecking: AuthorizationResponseIssChecking = .never) async throws -> AuthorizedRequest {
+		let issuer = try await makeIssuer(networking: networking, issChecking: issChecking)
 		return try await issuer.authorizeWithAuthorizationCode(
 			serverState: Self.state,
 			request: request,
 			authorizationCode: try AuthorizationCode(value: "auth-code"),
 			authorizationDetailsInTokenRequest: .doNotInclude,
-			grant: .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil))
+			grant: .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil)),
+			issuerFromRedirect: iss.flatMap(URL.init(string:))
 		)
 	}
 
-	private func makeIssuer(networking: TokenEndpointStub) async throws -> Issuer {
+	private func makeIssuer(networking: TokenEndpointStub, issChecking: AuthorizationResponseIssChecking) async throws -> Issuer {
 		let metadataData = try #require(Data(name: "pid-demo-openid-credential-issuer", ext: "json", from: Bundle.module))
 		let issuerMetadata = try JSONDecoder().decode(CredentialIssuerMetadata.self, from: metadataData)
-		let authorizationServerMetadata = AuthorizationServerMetadata(
-			issuer: "https://issuer.example",
-			authorizationEndpoint: "https://issuer.example/authorize",
-			tokenEndpoint: Self.tokenEndpoint.absoluteString,
-			dpopSigningAlgValuesSupported: [JWSAlgorithm(.ES256)]
-		)
-		let vciConfig = try await OpenId4VciConfiguration(credentialIssuerURL: "https://issuer.example", clientId: "wallet")
+		let authorizationServerMetadata = Self.authorizationServerMetadata()
+		let vciConfig = try await OpenId4VciConfiguration(credentialIssuerURL: "https://issuer.example", clientId: "wallet", authResponseIssChecking: issChecking)
 			.toOpenId4VCIConfig(credentialIssuerId: "https://issuer.example", clientAttestationPopSigningAlgValuesSupported: nil, context: ThreadSafeAuthContext())
 
 		let privateKey = try #require(SecKeyCreateRandomKey([kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeySizeInBits: 256] as CFDictionary, nil))
