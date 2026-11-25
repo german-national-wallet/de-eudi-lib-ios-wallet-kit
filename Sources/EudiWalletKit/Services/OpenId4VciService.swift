@@ -113,8 +113,8 @@ public actor OpenId4VciService {
 		let permitsPlainJwtFallback = config.allowPlainJwtProof && configuration.supportsPlainJwtProof
 			&& !configuration.supportsJwtProofTypeWithAttestation
 		let jwtAlgorithms = Set(configuration.jwtProofSigningAlgValuesSupported ?? [])
-		let secureAreaAlgorithms = type(of: issueReq.secureArea).supportedEcCurves.compactMap { Self.mapToJWSAlgorithmType($0.defaultSigningAlgorithm) }
-		let sharedTypes = algTypes.filter { jwtAlgorithms.contains($0.rawValue) && secureAreaAlgorithms.contains($0) }
+		let secureAreaAlgorithms = type(of: issueReq.secureArea).supportedEcCurves.compactMap { Self.mapToJWSAlgorithmType($0.defaultSigningAlgorithm) }
+		let sharedTypes = algTypes.filter { jwtAlgorithms.contains($0.rawValue) && secureAreaAlgorithms.contains($0) }
 		// Prefer a shared algorithm so a retry can reuse the attested keys.
 		let sharedAlgorithm = permitsPlainJwtFallback ? try? findCompatibleSigningAlgorithm(algSupported: sharedTypes) : nil
 		let selectedAlgorithm = try sharedAlgorithm ?? findCompatibleSigningAlgorithm(algSupported: algTypes)
@@ -931,7 +931,7 @@ public actor OpenId4VciService {
 		}
 		
 		let requestOutcome = try await Self.withPlainJwtProofFallback(bindingKeys: bindingKeys) { keys in
-			try await issuer.requestCredential(request: authorized, bindingKeys: keys, requestPayload: payload) { Issuer.createResponseEncryptionSpec($0) }
+			try await issuer.requestCredential(request: authorized, bindingKeys: keys, requestPayload: payload)
 		}
 		switch requestOutcome {
 		case .success(let response):
@@ -1054,7 +1054,7 @@ public actor OpenId4VciService {
 		}
 	}
 
-	private func refreshAuthorization(issuer: Issuer, authorized: AuthorizedRequest, configuration: CredentialConfiguration, forceRefreshToken: Bool) async throws -> AuthorizedRequest {
+	func refreshAuthorization(issuer: Issuer, authorized: AuthorizedRequest, configuration: CredentialConfiguration, forceRefreshToken: Bool) async throws -> AuthorizedRequest {
 		guard authorized.isAccessTokenExpired() || forceRefreshToken else { return authorized }
 		if let refreshTokenExpiresIn = authorized.refreshToken?.expiresIn,
 		   authorized.isRefreshTokenExpired(clock: Date.now.timeIntervalSinceReferenceDate) {
@@ -1147,7 +1147,7 @@ public actor OpenId4VciService {
 		logger.info("--> [ISSUANCE] Got a deferred issuance response from server with transaction_id \(transactionId.value). Retrying issuance...")
 		let isResponseEncryptionSupported = if case .notSupported = await issuer.issuerMetadata.credentialResponseEncryption { false } else { true }
 		if let derKeyData, isResponseEncryptionSupported {
-			await issuer.setDeferredResponseEncryptionSpec(Issuer.createResponseEncryptionSpec(issuer.issuerMetadata.credentialResponseEncryption, privateKeyData: derKeyData))
+			await issuer.setDeferredResponseEncryptionSpec(issuer.responseEncryptionSpec(privateKeyData: derKeyData))
 		}
 		// The library encrypts the request with the key from the issuer metadata, as for the credential request.
 		let deferredRequestResponse = try await issuer.requestDeferredCredential(request: authorized, transactionId: transactionId, dPopNonce: nil)
@@ -1550,7 +1550,7 @@ fileprivate extension URL {
 }
 
 // RFC 9207: OpenID4VCI keeps these accessors internal, so mirror them for requests the kit builds itself
-fileprivate extension IdentityAndAccessManagementMetadata {
+extension IdentityAndAccessManagementMetadata {
 	var issuerURL: URL? {
 		switch self {
 		case .oidc(let metaData): metaData.issuer.flatMap(URL.init(string:))
