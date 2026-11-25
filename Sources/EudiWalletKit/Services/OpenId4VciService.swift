@@ -873,7 +873,7 @@ public actor OpenId4VciService {
 			logger.info("PAR not supported, Pushed Authorization Request Endpoint is nil")
 		}
 		logger.info("--> [AUTHORIZATION] Placing Request to AS server's endpoint \(pushedAuthorizationRequestEndpoint)")
-		let parPlaced = try await issuer.prepareAuthorizationRequest(credentialOffer: offer)
+		let parPlaced = try await issuer.prepareAuthorizationRequest(credentialOffer: offer, additionalAuthorizationParameters: [:])
 
 		self.authRequested = parPlaced
 		logger.info("--> [AUTHORIZATION] Placed Request. Authorization code URL is: \(parPlaced.authorizationCodeURL)")
@@ -898,8 +898,7 @@ public actor OpenId4VciService {
 	private func handleAuthorizationCode(issuer: Issuer, offer: CredentialOffer, request: AuthorizationRequested, authorizationCode: String, serverState: String?, iss: String?) async throws -> AuthorizedRequest {
 		let typedAuthorizationCode = try AuthorizationCode(value: authorizationCode)
 		let authorized = try await issuer.authorizeWithAuthorizationCode(serverState: try Self.authorizationResponseState(serverState), request: request, authorizationCode: typedAuthorizationCode, authorizationDetailsInTokenRequest: .doNotInclude, grant: try offer.grants ?? .authorizationCode(try Grants.AuthorizationCode(authorizationServer: nil)), issuerFromRedirect: iss.flatMap(URL.init(string:)))
-		let at = authorized.accessToken
-		logger.info("--> [AUTHORIZATION] Authorization code exchanged with access token : \(at)")
+		logger.info("--> [AUTHORIZATION] Authorization code exchanged for access token")
 		_ = authorized.accessToken.isExpired(issued: authorized.timeStamp, at: Date().timeIntervalSinceReferenceDate)
 		return authorized
 	}
@@ -976,12 +975,10 @@ public actor OpenId4VciService {
 
 	static func handleCredentialResponse(credentials: [Credential], publicKeys: [Data], configuration: CredentialConfiguration, authorized: AuthorizedRequest, notificationId: String?, logger: Logger) async throws -> IssuanceOutcome {
 		let toData: (String) -> Data = { str in
-			logger.notice(configuration.format == .cbor ? "Base64URL mdoc data:\n\(str)" : "sd-jwt credential data:\n\(str)")
 			if configuration.format == .cbor { return Data(base64URLEncoded: str) ?? Data() } else { return str.data(using: .utf8) ?? Data() }
 		}
 		let issued: [String] = try credentials.flatMap { credential in
 		if case let .string(str) = credential  {
-			logger.notice("Issued credential data:\n\(str)")
 			return [str]
 		} else if case let .json(json) = credential, json.type == .array, json.first != nil {
 			let compactParser = CompactParser()
@@ -994,6 +991,7 @@ public actor OpenId4VciService {
 			throw WalletError(description: "Invalid credential", code: .issuanceRequestFailed)
 		} }
 		let credData: [(Data, Data)] = try issued.enumerated().map { index, str in (toData(str), try bindingKey(publicKeys, at: index)) }
+		logger.notice("Credential response processed")
 		return .issued(credData, configuration, authorized, notificationId: notificationId)
 	}
 
@@ -1177,7 +1175,7 @@ public actor OpenId4VciService {
 			self.logger.info("Dynamic issuance url: \(redirectURL)")
 			return .presentation_request(redirectURL)
 		} else if let code = redirectURL.getQueryStringParameter("code") {
-			self.logger.info("Authorization code: \(code)")
+			self.logger.info("Authorization code received")
 			let state = redirectURL.getQueryStringParameter("state")
 			let iss = redirectURL.getQueryStringParameter("iss")
 			return .code(code, state: state, iss: iss)
