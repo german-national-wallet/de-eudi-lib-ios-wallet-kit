@@ -43,7 +43,19 @@ extension EudiWallet {
 			  let authorizedData = try? JSONDecoder().decode(AuthorizedRequestData.self, from: data) else {
 			return nil
 		}
-		return AuthorizedRequestParams(from: authorizedData.toAuthorizedRequest())
+		return AuthorizedRequestParams(from: authorizedData.toAuthorizedRequest(), authorizationLifetime: authorizedData.authorizationLifetime)
+	}
+
+	/// The mdoc's `validityInfo.signed`, or nil for other formats.
+	public func credentialSignedDate(docId: WalletStorage.Document.ID) async -> Date? {
+		guard
+			let document = try? await storage.storageService.loadDocument(id: docId, status: .issued),
+			document.docDataFormat == .cbor,
+			let issuerSigned = try? IssuerSigned(data: [UInt8](document.data))
+		else {
+			return nil
+		}
+		return issuerSigned.issuerAuth.mso.validityInfo.signed.convertToLocalDate()
 	}
 
 	@MainActor
@@ -62,7 +74,7 @@ extension EudiWallet {
 			promptMessage: promptMessage,
 			forceRefreshToken: forceRefreshToken
 		)
-		return (documents, AuthorizedRequestParams(from: refreshed))
+		return (documents, AuthorizedRequestParams(from: refreshed, authorizationLifetime: authorizedRequestParams.authorizationLifetime))
 	}
 
 	public func deletePopKeys(secureAreaName: String) async {

@@ -47,6 +47,16 @@ When key attestation is supported, the fork returns an `.attestation(...)` bindi
 
 The Wallet App expects attestation-based proof handling for supported issuers, rather than the default upstream JWT binding-key behavior.
 
+### Authorization lifetime for refresh-token issuance
+
+Modified `Sources/EudiWalletKit/Extensions.swift` (`AuthorizedRequestData`, `convertToDocMetadata`) and `Sources/EudiWalletKit/Services/OpenId4VciService.swift` (`authorizationLifetimeSource`, used in `finalizeIssuing`).
+
+`AuthorizedRequestData` stores an `AuthorizationLifetime`: when the token response that returned the refresh token was received, and that time plus `authorization_expires_in`. Credentials re-issued through the compatibility refresh flow inherit the lifetime of the credentials they replace. `AuthorizedRequestParams.authorizationLifetime` and `EudiWallet.credentialSignedDate(docId:)` expose the dates to the app.
+
+**Why we need this:**
+
+The credential inspection screen shows the refresh token's lifetime for batch-issued credentials (including the PID), and the mdoc's `validityInfo.signed` otherwise. Upstream resets the token timestamp on every refresh and doesn't expose `signed`.
+
 ## Summary
 
 The fork does not broadly change the wallet-kit architecture.  

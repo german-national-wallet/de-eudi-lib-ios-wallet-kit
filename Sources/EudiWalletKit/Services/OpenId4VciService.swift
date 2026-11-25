@@ -40,6 +40,7 @@ import JSONWebAlgorithms
 
 public actor OpenId4VciService {
 	var issueReq: IssueRequest!
+	var authorizationLifetimeSource: AuthorizationLifetimeSource = .authorization
 	let uiCulture: String?
 	let logger: Logger
 	var config: OpenId4VciConfiguration
@@ -1254,7 +1255,7 @@ public actor OpenId4VciService {
 				issuedAuthorizedRequest = authorized
 				guard dataPairs.first != nil else { throw WalletError(description: "Empty issued data array", code: .internalError) }
 				dataToSave = issueOutcome.getDataToSave(index: 0, format: format)
-				docMetadata = cc.convertToDocMetadata(authorized: authorized, keyOptions: issueReq.keyOptions, credentialOptions: issueReq.credentialOptions)
+				docMetadata = cc.convertToDocMetadata(authorized: authorized, authorizationLifetime: authorizationLifetimeSource, keyOptions: issueReq.keyOptions, credentialOptions: issueReq.credentialOptions)
 				let docTypeOrVctOrScope = docType ?? cc.docType ?? cc.scope ?? ""
 				dkInfo.batchSize = dataPairs.count
 				docTypeToSave = if format == .cbor, dataToSave.count > 0 { (try IssuerSigned(data: [UInt8](dataToSave))).issuerAuth.mso.docType } else if format == .sdjwt, dataToSave.count > 0 { SdJwtUtils.getVctFromSdJwt(docData: dataToSave) ?? docTypeOrVctOrScope } else { docTypeOrVctOrScope }
@@ -1265,7 +1266,7 @@ public actor OpenId4VciService {
 				}
 			case .deferred(let deferredIssuanceModel, let cc, let authorized):
 				dataToSave = try JSONEncoder().encode(deferredIssuanceModel)
-				docMetadata = cc.convertToDocMetadata(authorized: authorized, keyOptions: issueReq.keyOptions, credentialOptions: issueReq.credentialOptions)
+				docMetadata = cc.convertToDocMetadata(authorized: authorized, authorizationLifetime: authorizationLifetimeSource, keyOptions: issueReq.keyOptions, credentialOptions: issueReq.credentialOptions)
 				docTypeToSave = docType ?? "DEFERRED"
 				displayName = cc.display.getName(uiCulture)
 			case .pending(let pendingAuthModel):

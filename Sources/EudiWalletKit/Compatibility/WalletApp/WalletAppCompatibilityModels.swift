@@ -30,6 +30,37 @@ public struct IssuerDPoPConstructorParam: @unchecked Sendable {
 	}
 }
 
+/// Lifetime of the authorization behind a refresh token: when the token response that returned the
+/// refresh token was received, and that time plus its `authorization_expires_in`.
+/// Captured once at issuance and carried over when credentials are re-issued with the refresh token.
+public struct AuthorizationLifetime: Codable, Sendable, Equatable {
+	public let issuedAt: Date
+	public let expiresAt: Date?
+
+	public init(issuedAt: Date, expiresAt: Date?) {
+		self.issuedAt = issuedAt
+		self.expiresAt = expiresAt
+	}
+
+	init?(authorized: AuthorizedRequest) {
+		guard let refreshToken = authorized.refreshToken, refreshToken.refreshToken != nil else { return nil }
+		let issuedAt = Date(timeIntervalSinceReferenceDate: authorized.timeStamp)
+		self.init(issuedAt: issuedAt, expiresAt: refreshToken.authorizationExpiresIn.map { issuedAt.addingTimeInterval($0) })
+	}
+}
+
+enum AuthorizationLifetimeSource: Sendable {
+	case authorization
+	case inherited(AuthorizationLifetime?)
+
+	func lifetime(for authorized: AuthorizedRequest) -> AuthorizationLifetime? {
+		switch self {
+		case .authorization: AuthorizationLifetime(authorized: authorized)
+		case .inherited(let lifetime): lifetime
+		}
+	}
+}
+
 public struct AuthorizedRequestParams: Sendable {
 	public let accessToken: String?
 	public let refreshToken: String?
@@ -37,23 +68,26 @@ public struct AuthorizedRequestParams: Sendable {
 	public let tokenType: TokenType?
 	public let accessTokenExpiresIn: TimeInterval?
 	public let refreshTokenExpiresIn: TimeInterval?
+	public let authorizationLifetime: AuthorizationLifetime?
 
-	public init(accessToken: String, refreshToken: String?, timeStamp: TimeInterval, tokenType: TokenType? = .dpop, accessTokenExpiresIn: TimeInterval? = nil, refreshTokenExpiresIn: TimeInterval? = nil) {
+	public init(accessToken: String, refreshToken: String?, timeStamp: TimeInterval, tokenType: TokenType? = .dpop, accessTokenExpiresIn: TimeInterval? = nil, refreshTokenExpiresIn: TimeInterval? = nil, authorizationLifetime: AuthorizationLifetime? = nil) {
 		self.accessToken = accessToken
 		self.refreshToken = refreshToken
 		self.timeStamp = timeStamp
 		self.tokenType = tokenType
 		self.accessTokenExpiresIn = accessTokenExpiresIn
 		self.refreshTokenExpiresIn = refreshTokenExpiresIn
+		self.authorizationLifetime = authorizationLifetime
 	}
 
-	public init(from authorized: AuthorizedRequest) {
+	public init(from authorized: AuthorizedRequest, authorizationLifetime: AuthorizationLifetime? = nil) {
 		self.accessToken = authorized.accessToken.accessToken
 		self.refreshToken = authorized.refreshToken?.refreshToken
 		self.timeStamp = authorized.timeStamp
 		self.tokenType = authorized.accessToken.tokenType
 		self.accessTokenExpiresIn = authorized.accessToken.expiresIn
 		self.refreshTokenExpiresIn = authorized.refreshToken?.expiresIn
+		self.authorizationLifetime = authorizationLifetime
 	}
 
 	public func toAuthorizedRequest() throws -> AuthorizedRequest {

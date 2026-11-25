@@ -258,6 +258,13 @@ extension OpenId4VciService {
 			throw RefreshAuthorizationError.reauthorizationRequired(statusCode: code, description: "\(error)")
 		}
 
+		// Re-issued credentials keep the authorization lifetime of the ones they replace,
+		// so getting new credentials with the refresh token doesn't reset it.
+		var inheritedLifetimes = [AuthorizationLifetime?]()
+		for docId in docIds {
+			inheritedLifetimes.append(await storedAuthorizationLifetime(docId: docId))
+		}
+
 		let uiCulture = self.uiCulture
 		let config = self.config
 		let networking = self.networking
@@ -273,6 +280,7 @@ extension OpenId4VciService {
 			for (index, docTypeIdentifier) in docTypeIdentifiers.enumerated() {
 				let configuration = credentialConfigurations[index]
 				let deleteId = docIds[index]
+				let inheritedLifetime = inheritedLifetimes[index]
 				group.addTask {
 					let service = try OpenId4VciService(
 						uiCulture: uiCulture,
@@ -298,6 +306,7 @@ extension OpenId4VciService {
 						promptMessage: promptMessage
 					)
 					await service.setAdditionalOptions(configuration.configurationIdentifier.value)
+					await service.setAuthorizationLifetimeSource(.inherited(inheritedLifetime))
 					let (bindingKeys, publicKeys) = try await service.initSecurityKeys(configuration, clientId: issuer.config.client.id)
 					let outcome = try await service.issueDocumentByOfferUrl(
 						issuer: issuer,
@@ -325,6 +334,21 @@ extension OpenId4VciService {
 		}
 		logger.info("Refresh token: re-issued \(documents.count) credential(s) under one refreshed authorization (replaced docIds \(docIds)).")
 		return (documents, refreshed)
+	}
+
+	func setAuthorizationLifetimeSource(_ source: AuthorizationLifetimeSource) {
+		authorizationLifetimeSource = source
+	}
+
+	func storedAuthorizationLifetime(docId: String) async -> AuthorizationLifetime? {
+		guard
+			let metadata = try? await storageService.loadDocumentMetadata(id: docId, status: .issued),
+			let data = metadata.authorizedRequestData,
+			let stored = try? JSONDecoder().decode(AuthorizedRequestData.self, from: data)
+		else {
+			return nil
+		}
+		return stored.authorizationLifetime
 	}
 
 	static func makeResumeAuthorizationRequest(model: PendingIssuanceModel, authorizePresentationUrl: String?, nonce: String?, authorizationServerMetadata: IdentityAndAccessManagementMetadata) throws -> AuthorizationRequested {

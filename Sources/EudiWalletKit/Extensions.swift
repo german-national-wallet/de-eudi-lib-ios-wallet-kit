@@ -198,11 +198,13 @@ struct AuthorizedRequestData: Codable {
 	let accessToken: IssuanceAccessToken
 	let refreshToken: IssuanceRefreshToken?
 	let timeStamp: TimeInterval
+	let authorizationLifetime: AuthorizationLifetime?
 
-	init(from authorized: AuthorizedRequest) {
+	init(from authorized: AuthorizedRequest, authorizationLifetime: AuthorizationLifetimeSource = .authorization) {
 		self.accessToken = authorized.accessToken
 		self.refreshToken = authorized.refreshToken
 		self.timeStamp = authorized.timeStamp
+		self.authorizationLifetime = authorizationLifetime.lifetime(for: authorized)
 	}
 
 	func toAuthorizedRequest() -> AuthorizedRequest {
@@ -211,9 +213,9 @@ struct AuthorizedRequestData: Codable {
 }
 
 extension CredentialConfiguration {
-	func convertToDocMetadata(authorized: AuthorizedRequest? = nil, keyOptions: KeyOptions? = nil, credentialOptions: CredentialOptions? = nil) -> DocMetadata {
+	func convertToDocMetadata(authorized: AuthorizedRequest? = nil, authorizationLifetime: AuthorizationLifetimeSource = .authorization, keyOptions: KeyOptions? = nil, credentialOptions: CredentialOptions? = nil) -> DocMetadata {
 		let claimMetadata = claims.map(\.metadata)
-		let authorizedRequestData: Data? = if let authorized { try? JSONEncoder().encode(AuthorizedRequestData(from: authorized)) } else { nil }
+		let authorizedRequestData: Data? = if let authorized { try? JSONEncoder().encode(AuthorizedRequestData(from: authorized, authorizationLifetime: authorizationLifetime)) } else { nil }
 		let resolvedDocType = docType ?? vct ?? ""
 		return DocMetadata(credentialIssuerIdentifier: credentialIssuerIdentifier, configurationIdentifier: configurationIdentifier.value, docType: resolvedDocType, display: display, issuerDisplay: issuerDisplay, claims: claimMetadata, authorizedRequestData: authorizedRequestData, keyOptions: keyOptions, credentialOptions: credentialOptions)
 	}
